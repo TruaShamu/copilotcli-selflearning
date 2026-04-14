@@ -13,16 +13,15 @@ The core claim is: **Copilot CLI gets measurably better at your workflows over
 time when using self-learning.** Proving that requires four experiments, each
 targeting a different subsystem.
 
-| Experiment | Tests | Minimum for workshop paper |
-|------------|-------|---------------------------|
+| Experiment | Tests | Priority |
+|------------|-------|----------|
 | [1. Before/After Task Performance](#1-beforeafter-task-performance) | End-to-end system value | ✅ Required |
 | [2. Skill Evolution Quality](#2-skill-evolution-quality) | DSPy+GEPA optimizer | Nice to have |
 | [3. N-gram Mining Precision](#3-n-gram-mining-precision) | Tool sequence analysis | ✅ Required (most novel) |
 | [4. Memory Relevance](#4-memory-relevance) | Preference/memory retrieval | Nice to have |
 
-**Target scale for a workshop/demo paper:** 5–10 tasks, 30–50 sessions, 3–5
-skills evolved. A main conference paper would need 20+ tasks, 100+ sessions,
-and comparison against at least one baseline.
+**Recommended scale:** 50–100 benchmark tasks, 30–50 real sessions, 3–5
+skills evolved.
 
 ---
 
@@ -30,22 +29,23 @@ and comparison against at least one baseline.
 
 > Does the self-learning system make Copilot measurably better over time?
 
-### Setup
+### Task Source: SWE-bench Lite
 
-1. Define **10 realistic tasks** spanning different workflows:
-   - Bug fix from issue description
-   - Add a feature with tests
-   - Refactor + update docs
-   - Debug a failing CI pipeline
-   - Set up a new project from scratch
-   - Write a migration script
-   - Review and improve existing code
-   - Create an API endpoint end-to-end
-   - Write integration tests for existing code
-   - Optimize a slow database query
+Instead of manually defining tasks, we use
+[SWE-bench Lite](https://github.com/princeton-nlp/SWE-bench) — a curated
+subset of **300 real GitHub issues** across 11 Python repositories (Django,
+scikit-learn, sympy, etc.). Each task has:
 
-2. Create a **fresh repo** (or use a template) for each task with the problem
-   already set up (failing test, slow query, etc.).
+- A natural-language issue description
+- A target repository at a specific commit
+- A test suite that validates the fix (binary pass/fail)
+
+This gives us **reproducible, industry-standard evaluation** with automated
+grading. Most coding agent papers report scores on SWE-bench, so results are
+directly comparable.
+
+**Subset size:** 50–100 tasks from SWE-bench Lite is sufficient. Select tasks
+spanning different complexity levels (easy bug fixes → multi-file refactors).
 
 ### Protocol
 
@@ -54,20 +54,21 @@ Phase A — Baseline (no self-learning)
 ──────────────────────────────────────
 1. Uninstall hooks: python uninstall-hooks.py
 2. Delete or rename ~/.copilot/self-learning/memory.db
-3. Run each task with vanilla Copilot CLI
-4. Record metrics (see below)
+3. Run each SWE-bench task with vanilla Copilot CLI
+4. Grade with SWE-bench harness (pass/fail per task)
+5. Record additional metrics (see below)
 
 Phase B — Cold start (self-learning enabled, empty memory)
 ──────────────────────────────────────────────────────────
 1. Install hooks: bash install-hooks.sh
 2. Start with fresh memory.db
-3. Run the SAME 10 tasks in order
+3. Run the SAME tasks in order
 4. Record metrics after each task
 
 Phase C — Warm system (after 30+ sessions)
 ──────────────────────────────────────────
 1. Use the memory.db from Phase B (now populated)
-2. Run the same 10 tasks again
+2. Run the same tasks again
 3. Record metrics — this is the "learned" condition
 ```
 
@@ -77,9 +78,9 @@ Collect per-task:
 
 | Metric | How to measure | Why it matters |
 |--------|---------------|----------------|
+| **Task success** | SWE-bench harness (automated pass/fail) | Core correctness — industry standard |
 | **Tool calls** | `python memory_cli.py stats` → `tool_usage_entries` per session | Fewer calls = more efficient |
 | **Turns to completion** | Count `session_turns` for the session | Fewer turns = less back-and-forth |
-| **Task success** | Manual binary: did Copilot complete the task? (1/0) | Core correctness |
 | **Error rate** | Count tool calls with `success=0` in `tool_usage` | Fewer errors = learned from mistakes |
 | **Wall-clock time** | `sessions.ended_at - sessions.started_at` | Real-world speed |
 | **Preference hits** | Count prefs loaded by `sessionStart` hook | System is actually using memory |
@@ -97,9 +98,10 @@ python resources/memory_cli.py query-tool-sequences --patterns --window-size 3
 # (you'll need to save stats snapshots between phases)
 ```
 
-**Expected result:** Phase C should show fewer tool calls, fewer errors, and
-faster completion than Phase A. Phase B should be roughly equal to Phase A
-(cold start hasn't learned yet) but should improve across the 10 tasks.
+**Expected result:** Phase C should show higher SWE-bench pass rate, fewer
+tool calls, fewer errors, and faster completion than Phase A. Phase B should
+be roughly equal to Phase A (cold start hasn't learned yet) but should improve
+across tasks as memory accumulates.
 
 ---
 
@@ -260,7 +262,7 @@ python resources/memory_cli.py query-memory
 For each preference/memory, label:
 
 | Fact | Still accurate? | Used in session? | Would have helped? |
-|------|----------------|------------------|--------------------|
+|------|----------------|------------------|---------------------|
 | "User prefers tabs over spaces" | ✅ | ✅ (code task) | Yes |
 | "Project X uses PostgreSQL" | ✅ | ❌ (wrong project) | No |
 | "Build command is `make test`" | ❌ (changed) | ❌ | Harmful if used |
@@ -287,19 +289,21 @@ If the staleness rate is high, the supersede mechanism isn't triggering often en
 pip install -r requirements.txt
 # For evolution experiments:
 pip install dspy gepa rich click
+# For SWE-bench:
+pip install swebench
 ```
 
 ### Recommended order
 
 1. **N-gram mining first** (Experiment 3) — only needs existing session data,
-   no new sessions required. Quick win, strongest paper angle.
+   no new sessions required. Quick win, strongest angle.
 2. **Before/after** (Experiment 1) — most effort but most convincing result.
 3. **Evolution** (Experiment 2) — can run in parallel with Experiment 1.
 4. **Memory relevance** (Experiment 4) — piggyback on sessions from Experiment 1.
 
 ### Data hygiene
 
-- **Separate repos per task** in Experiment 1 to avoid cross-contamination
+- **Use SWE-bench's Docker harness** for reproducible test grading
 - **Seed the RNG** in evolution experiments for reproducibility
 - **Save memory.db snapshots** between phases: `cp memory.db memory-phase-A.db`
 - **Record Copilot CLI version** — hook behavior may change between versions
@@ -310,25 +314,27 @@ After running the full eval, you should have:
 
 ```
 eval/
-├── phase-a-baseline/          # Experiment 1: vanilla metrics
-│   └── stats-per-task.json
-├── phase-b-cold/              # Experiment 1: cold start metrics
-│   └── stats-per-task.json
-├── phase-c-warm/              # Experiment 1: learned metrics
-│   └── stats-per-task.json
-├── evolution/                 # Experiment 2: per-skill metrics
+├── swebench-results/            # Experiment 1: SWE-bench grading
+│   ├── phase-a-baseline.json
+│   ├── phase-b-cold.json
+│   └── phase-c-warm.json
+├── session-metrics/             # Experiment 1: efficiency metrics
+│   ├── phase-a-stats.json
+│   ├── phase-b-stats.json
+│   └── phase-c-stats.json
+├── evolution/                   # Experiment 2: per-skill metrics
 │   ├── self-learning/
 │   │   └── metrics.json
 │   └── code-review/
 │       └── metrics.json
-├── ngram-analysis/            # Experiment 3: pattern mining
+├── ngram-analysis/              # Experiment 3: pattern mining
 │   ├── patterns-w2.json
 │   ├── patterns-w3.json
 │   ├── patterns-w4.json
-│   └── labels.csv            # Human labels
-├── memory-audit/              # Experiment 4: relevance labels
+│   └── labels.csv              # Human labels
+├── memory-audit/                # Experiment 4: relevance labels
 │   └── relevance-labels.csv
-└── memory-snapshots/          # DB snapshots between phases
+└── memory-snapshots/            # DB snapshots between phases
     ├── memory-phase-a.db
     ├── memory-phase-b.db
     └── memory-phase-c.db
@@ -336,22 +342,7 @@ eval/
 
 ---
 
-## Paper Framing
-
-**Workshop/demo paper (4–6 pages):**
-- Title: "Self-Learning CLI Agents: Automated Workflow Discovery from Tool Traces"
-- Focus on Experiment 3 (n-gram mining) + Experiment 1 (before/after)
-- Position: tool/demo paper at an SE or AI agents workshop
-
-**Full conference paper (8–10 pages):**
-- All four experiments
-- Comparison baseline: vanilla Copilot CLI + static skills (no evolution)
-- Second baseline: Copilot CLI + hand-written skills (human ceiling)
-- Venues: ICSE (tool track), FSE (ideas track), NeurIPS (agents workshop),
-  EMNLP (tool-augmented LLMs)
-
----
-
 ## Revision History
 
 - 2026-04-14: Initial evaluation protocol — four experiments, metrics, analysis plan
+- 2026-04-14: Use SWE-bench Lite as task source for Experiment 1; remove paper framing details
