@@ -22,23 +22,7 @@ capabilities that compound over time:
 
 ## Requirements
 
-- **Version**: 0.2.0 (prototype)
-- **Compatibility**: Windows, Linux, macOS
-- **Runtime**: Python 3.9+ (for local SQLite memory store)
-
-## Architecture
-
-All memory is local SQLite — nothing goes to the repo-scoped `store_memory` system.
-
-| Table | Purpose | Capability |
-|-------|---------|-----------|
-| `preferences` | Personal workflow/style prefs with confidence + supersede chain | Cap 5 |
-| `personal_memory` | Facts, conventions, gotchas, commands | Cap 3 |
-| `skill_usage` | Tracks skill outcomes + friction notes | Cap 2 |
-| `learning_log` | Session workflows flagged as skill candidates | Cap 1 |
-
-**DB location**: `~/.copilot/self-learning/memory.db`
-**CLI tool**: `~/.copilot/skills/self-learning/resources/memory_cli.py`
+- Python 3.9+ (for local SQLite memory store)
 
 ### Quick reference
 
@@ -464,17 +448,6 @@ or historical decisions that inform the current task.
 ### Session ingestion guidance
 
 Session transcripts are automatically archived by the `sessionEnd` hook.
-For manual ingestion or bulk imports, use:
-
-```bash
-# Bulk ingest from JSON
-echo '{"session_id":"...","repo":"...","turns":[...]}' | \
-  python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-session
-
-# Or incrementally per turn
-python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-turn \
-  "<session_id>" "<role>" "<content>" --repo "<owner/repo>"
-```
 
 ---
 
@@ -526,65 +499,12 @@ Store everything locally — preferences, conventions, team rules, personal styl
 
 ### Privacy guardrails
 
-- All data stays local in `~/.copilot/self-learning/memory.db`
 - Never store credentials, tokens, or secrets
-- `store_memory` is blocked by the `preToolUse` hook — no repo leakage possible
-- User controls their own DB (can delete, export, inspect anytime)
-
----
-
-## Self-Trigger Guidance (for AGENTS.md)
-
-With hooks installed, the AGENTS.md protocol is lighter. Add this to your
-`AGENTS.md` or custom instructions — it covers only the parts that need
-LLM judgment (hooks handle the rest):
-
-```markdown
-## Self-Learning Protocol
-
-> **Prerequisite**: Install hooks from `.github/hooks/copilot-hooks.json`.
-> Hooks handle: preference loading (sessionStart), session archival (sessionEnd),
-> skill usage tracking (postToolUse), and store_memory blocking (preToolUse).
-
-### Session Start
-
-At the beginning of each session, before starting work:
-
-1. ~~Load user preferences~~ → handled by `sessionStart` hook
-2. If the user's first message mentions a specific topic, search prior sessions:
-   `python ~/.copilot/skills/self-learning/resources/memory_cli.py search-sessions "<topic>" --context 3`
-3. Silently incorporate any loaded context. Briefly mention prior-art hits.
-
-### Post-Task
-
-After completing any substantial task (3+ tool calls, multi-phase work),
-run all of the following in a single autonomous pass:
-
-1. **Memory nudge** (silent): Store 1-3 novel facts via `memory_cli.py store-memory`.
-   Briefly confirm what was stored.
-2. **Preference observation** (silent): Store any user-demonstrated conventions
-   via `memory_cli.py store-pref`.
-3. ~~Session ingestion~~ → handled by `sessionEnd` hook
-4. **Skill creation check** (ask user): Only if the session was a novel 3+ phase
-   workflow, ask if the user wants to save it as a skill.
-5. **Skill improvement check** (ask user): Only if a skill was used and you
-   encountered friction, propose improvements.
-
-### Do NOT self-trigger when:
-- The task was simple Q&A or a single tool call
-- The user explicitly asked you to stop learning
-- You've already run the post-task flow this session
-
-### Memory location:
-- All learning data: ~/.copilot/self-learning/memory.db (local SQLite)
-- CLI tool: ~/.copilot/skills/self-learning/resources/memory_cli.py
-- store_memory is blocked by preToolUse hook — no action needed
-```
+- `store_memory` is blocked by the `preToolUse` hook
 
 ---
 
 ## Revision History
 
 - 2026-04-11: Initial prototype — capabilities 1-5
-- 2026-04-14: Removed external project references; made skill self-contained
-- 2026-04-14: Pruned instructions now handled by Copilot CLI hooks; added hook cross-references
+- 2026-04-14: Added hooks, pruned instructions handled by hooks
