@@ -13,6 +13,9 @@ capabilities that compound over time:
 
 ### As a plugin (recommended)
 
+> **Note**: Plugin install support requires Copilot CLI with plugin support
+> enabled. Check [GitHub docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-finding-installing) for availability.
+
 ```bash
 copilot plugin install TruaShamu/copilotcli-selflearning
 ```
