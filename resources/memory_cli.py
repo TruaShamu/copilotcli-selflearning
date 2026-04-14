@@ -30,6 +30,9 @@ from datetime import datetime, timezone
 DB_DIR = os.path.expanduser("~/.copilot/self-learning")
 DB_PATH = os.path.join(DB_DIR, "memory.db")
 
+# Copilot CLI's native session store (read-only, may not exist)
+NATIVE_SESSION_STORE = os.path.expanduser("~/.copilot/session-store.db")
+
 
 def get_conn():
     os.makedirs(DB_DIR, exist_ok=True)
@@ -333,11 +336,32 @@ def cmd_stats(args):
     stats["skill_usages"] = conn.execute("SELECT COUNT(*) FROM skill_usage").fetchone()[0]
     stats["learning_logs"] = conn.execute("SELECT COUNT(*) FROM learning_log").fetchone()[0]
     stats["skill_candidates"] = conn.execute("SELECT COUNT(*) FROM learning_log WHERE skill_candidate=1").fetchone()[0]
-    stats["sessions"] = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    stats["session_turns"] = conn.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0]
     stats["tool_usage_entries"] = conn.execute("SELECT COUNT(*) FROM tool_usage").fetchone()[0]
     stats["db_path"] = DB_PATH
     stats["db_size_kb"] = round(os.path.getsize(DB_PATH) / 1024, 1)
+
+    # Legacy session store (memory.db)
+    stats["legacy_sessions"] = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    stats["legacy_session_turns"] = conn.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0]
+
+    # Native session store (session-store.db)
+    native_conn = _get_native_conn()
+    if native_conn:
+        try:
+            stats["native_store_path"] = NATIVE_SESSION_STORE
+            stats["native_store_size_kb"] = round(os.path.getsize(NATIVE_SESSION_STORE) / 1024, 1)
+            stats["native_sessions"] = native_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            stats["native_turns"] = native_conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+            stats["native_search_index"] = native_conn.execute("SELECT COUNT(*) FROM search_index").fetchone()[0]
+            stats["session_source"] = "native"
+        except Exception:
+            stats["session_source"] = "legacy"
+        finally:
+            native_conn.close()
+    else:
+        stats["session_source"] = "legacy"
+
+    print(json.dumps(stats, indent=2))
     print(json.dumps(stats, indent=2))
 
 
@@ -385,6 +409,18 @@ def cmd_decay_report(args):
 # ---------------------------------------------------------------------------
 # Session transcript storage & FTS5 search
 # ---------------------------------------------------------------------------
+
+def _get_native_conn():
+    """Get a read-only connection to Copilot CLI's native session-store.db.
+
+    Returns None if the native store doesn't exist.
+    """
+    if not os.path.exists(NATIVE_SESSION_STORE):
+        return None
+    conn = sqlite3.connect(f"file:{NATIVE_SESSION_STORE}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 
 def cmd_log_tool(args):
     """Log a single tool invocation for a session."""
@@ -533,15 +569,118 @@ def cmd_ingest_session(args):
 
 
 def cmd_search_sessions(args):
-    """FTS5 full-text search across all session transcripts.
+    """FTS5 full-text search across session transcripts.
 
-    Returns ranked matches grouped by session, with surrounding context.
+    Tries the native Copilot CLI session-store.db first (833+ sessions with
+    FTS5 already indexed). Falls back to the self-learning memory.db store
+    if the native store isn't available.
+
     Output is designed to be fed to an LLM subagent for summarization.
     """
-    conn = get_conn()
-    query = args.query
+    native_conn = _get_native_conn()
+    if native_conn:
+        _search_native(native_conn, args)
+        native_conn.close()
+    else:
+        _search_legacy(get_conn(), args)
 
-    # FTS5 search with BM25 ranking
+
+def _search_native(conn, args):
+    """Search the native Copilot CLI session-store.db via its FTS5 index."""
+    query = args.query
+    # Escape hyphens for FTS5 — unquoted hyphens are treated as column
+    # prefix operators which causes "no such column" errors.
+    import re
+    safe_query = re.sub(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")', r'"\1"', query)
+    params = [safe_query]
+
+    sql = """
+        SELECT
+            si.session_id,
+            si.source_type,
+            si.content,
+            s.summary,
+            s.repository AS repo,
+            s.branch,
+            s.created_at AS started_at,
+            rank
+        FROM search_index si
+        JOIN sessions s ON si.session_id = s.id
+        WHERE search_index MATCH ?
+        ORDER BY rank
+        LIMIT ?
+    """
+    params.append(args.limit)
+
+    try:
+        rows = conn.execute(sql, params).fetchall()
+    except Exception:
+        # FTS5 query syntax error — fall back to legacy
+        _search_legacy(get_conn(), args)
+        return
+
+    if not rows:
+        print(json.dumps({"query": query, "results": [], "count": 0, "source": "native"}))
+        return
+
+    # Group by session
+    sessions = {}
+    for row in rows:
+        sid = row["session_id"]
+        if sid not in sessions:
+            sessions[sid] = {
+                "session_id": sid,
+                "summary": row["summary"],
+                "repo": row["repo"],
+                "branch": row["branch"],
+                "started_at": row["started_at"],
+                "matches": [],
+            }
+        sessions[sid]["matches"].append({
+            "source_type": row["source_type"],
+            "content": row["content"][:500],
+            "rank": row["rank"],
+        })
+
+    # Load surrounding turns for context
+    if args.context > 0:
+        for sid, sdata in sessions.items():
+            context_rows = conn.execute(
+                """SELECT turn_index, user_message, assistant_response
+                   FROM turns
+                   WHERE session_id = ?
+                   ORDER BY turn_index
+                   LIMIT ?""",
+                (sid, args.context * 2),
+            ).fetchall()
+            sdata["context_window"] = []
+            for r in context_rows:
+                if r["user_message"]:
+                    sdata["context_window"].append({
+                        "turn_index": r["turn_index"],
+                        "role": "user",
+                        "content": r["user_message"][:2000],
+                    })
+                if r["assistant_response"]:
+                    sdata["context_window"].append({
+                        "turn_index": r["turn_index"],
+                        "role": "assistant",
+                        "content": r["assistant_response"][:2000],
+                    })
+
+    result = {
+        "query": query,
+        "results": list(sessions.values()),
+        "count": len(sessions),
+        "total_matches": len(rows),
+        "source": "native",
+    }
+    print(json.dumps(result, indent=2))
+
+
+def _search_legacy(conn, args):
+    """Search the self-learning memory.db FTS5 store (fallback)."""
+    query = args.query
     params = [query]
 
     sql = """
@@ -569,7 +708,7 @@ def cmd_search_sessions(args):
     rows = conn.execute(sql, params).fetchall()
 
     if not rows:
-        print(json.dumps({"query": query, "results": [], "count": 0}))
+        print(json.dumps({"query": query, "results": [], "count": 0, "source": "legacy"}))
         return
 
     # Group by session
@@ -588,11 +727,10 @@ def cmd_search_sessions(args):
         sessions[sid]["matches"].append({
             "role": row["role"],
             "turn_index": row["turn_index"],
-            "content": row["content"][:500],  # Truncate for preview
+            "content": row["content"][:500],
             "rank": row["rank"],
         })
 
-    # If --context is set, load surrounding turns for each matched session
     if args.context > 0:
         for sid, sdata in sessions.items():
             match_indices = {m["turn_index"] for m in sdata["matches"]}
@@ -614,24 +752,51 @@ def cmd_search_sessions(args):
         "results": list(sessions.values()),
         "count": len(sessions),
         "total_matches": len(rows),
+        "source": "legacy",
     }
     print(json.dumps(result, indent=2))
 
 
 def cmd_recent_sessions(args):
-    """List recent sessions with metadata (no search, no LLM)."""
-    conn = get_conn()
-    rows = conn.execute(
-        """SELECT s.id, s.repo, s.branch, s.summary, s.started_at, s.ended_at,
-                  COUNT(st.id) as turn_count
-           FROM sessions s
-           LEFT JOIN session_turns st ON s.id = st.session_id
-           GROUP BY s.id
-           ORDER BY s.started_at DESC
-           LIMIT ?""",
-        (args.limit,),
-    ).fetchall()
-    print(json.dumps([dict(r) for r in rows], indent=2))
+    """List recent sessions with metadata.
+
+    Uses the native Copilot CLI session-store.db if available (much richer data),
+    otherwise falls back to the self-learning memory.db store.
+    """
+    native_conn = _get_native_conn()
+    if native_conn:
+        rows = native_conn.execute(
+            """SELECT s.id, s.repository AS repo, s.branch, s.summary,
+                      s.created_at AS started_at, s.updated_at AS ended_at,
+                      COUNT(t.id) AS turn_count
+               FROM sessions s
+               LEFT JOIN turns t ON s.id = t.session_id
+               GROUP BY s.id
+               ORDER BY s.created_at DESC
+               LIMIT ?""",
+            (args.limit,),
+        ).fetchall()
+        result = [dict(r) for r in rows]
+        for r in result:
+            r["source"] = "native"
+        native_conn.close()
+        print(json.dumps(result, indent=2))
+    else:
+        conn = get_conn()
+        rows = conn.execute(
+            """SELECT s.id, s.repo, s.branch, s.summary, s.started_at, s.ended_at,
+                      COUNT(st.id) as turn_count
+               FROM sessions s
+               LEFT JOIN session_turns st ON s.id = st.session_id
+               GROUP BY s.id
+               ORDER BY s.started_at DESC
+               LIMIT ?""",
+            (args.limit,),
+        ).fetchall()
+        result = [dict(r) for r in rows]
+        for r in result:
+            r["source"] = "legacy"
+        print(json.dumps(result, indent=2))
 
 
 def cmd_ingest_turn(args):
