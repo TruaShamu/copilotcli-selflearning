@@ -24,6 +24,39 @@ capabilities that compound over time:
 
 - Python 3.9+ (for local SQLite memory store)
 
+### Quick reference
+
+```bash
+# Preferences
+python memory_cli.py store-pref <category> "<fact>" --confidence 0.8
+python memory_cli.py query-prefs [--category <cat>]
+python memory_cli.py supersede-pref <old_id> "<new_fact>"
+
+# Memory
+python memory_cli.py store-memory <subject> "<fact>" --repo "owner/repo"
+python memory_cli.py query-memory [--subject <sub>] [--search <text>]
+
+# Skill tracking
+python memory_cli.py log-skill <name> <success|partial|failure|skipped> --friction "..."
+python memory_cli.py query-skills [--name <name>]
+
+# Learning log
+python memory_cli.py log-learning "<intent>" "<phases>" <tool_count> --candidate
+python memory_cli.py query-learnings [--candidates-only]
+
+# Sessions & search
+python memory_cli.py ingest-turn <session_id> <role> "<content>" --repo "..."
+python memory_cli.py search-sessions "<query>" --context 3 --limit 30
+python memory_cli.py recent-sessions --limit 10
+
+# Tool sequences
+python memory_cli.py log-tool <session_id> <tool_name> [--failed]
+python memory_cli.py query-tool-sequences [--patterns --window-size 3]
+
+# Stats
+python memory_cli.py stats
+```
+
 ## When to Use This Skill
 
 Activate this skill when the user:
