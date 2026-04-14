@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "./hooks/session-start.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/session-start.ps1",
+        "timeoutSec": 15
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "./hooks/session-end.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/session-end.ps1",
+        "timeoutSec": 15
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "./hooks/pre-tool-use.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/pre-tool-use.ps1",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "./hooks/post-tool-use.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/post-tool-use.ps1",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
