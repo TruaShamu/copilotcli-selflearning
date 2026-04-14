@@ -1,128 +1,87 @@
 # Self-Learning Auto-Trigger Protocol
 
-Drop this section into your `AGENTS.md` (or `.github/copilot-instructions.md`)
-to enable the self-learning loop without manual invocation.
+Add this to your `~/.copilot/copilot-instructions.md` to enable the
+self-learning loop. This is **required** — without it, the LLM won't know
+to use the plugin's commands.
 
 ---
 
-## Recommended AGENTS.md Addition
-
-> With hooks installed (see below), this protocol is lighter — only the parts
-> requiring LLM judgment remain.
+## Recommended `copilot-instructions.md` Addition
 
 ```markdown
-## Self-Learning Protocol
+# Personal Instructions
 
-> **Prerequisite**: Install hooks from `.github/hooks/copilot-hooks.json`.
-> Hooks handle: preference loading, session archival, skill tracking, and
-> store_memory blocking.
+## Self-Learning Integration
 
-### Session Start
+The self-learning skill plugin is installed. Use it throughout sessions:
 
-At the beginning of each session, before starting work:
+### Session start (do this first, silently)
+At the start of every session, before responding to the first prompt, silently run `query-prefs` to load my stored preferences. Use them to inform your behavior throughout the session. Don't mention that you did this unless I ask.
 
-1. ~~Load user preferences~~ → handled by `sessionStart` hook
-2. If the user's first message mentions a specific topic, search prior sessions:
-   `python ~/.copilot/skills/self-learning/resources/memory_cli.py search-sessions "<topic>" --context 3`
-3. Silently incorporate any loaded context. Briefly mention prior-art hits.
+### Skill auto-creation
+After completing any multi-step task involving 3 or more distinct phases (e.g., research → implement → test), evaluate whether the workflow could be saved as a reusable skill. If it looks reusable, ask me:
+> "This looked like a reusable workflow. Want me to save it as a skill?"
 
-### Post-Task
+Don't save trivial tasks, single-tool operations, or one-off debugging sessions.
 
-After completing any substantial task (3+ tool calls, multi-phase work),
-run all of the following in a single autonomous pass:
+### Skill self-improvement
+When using an existing skill and you encounter friction (wrong steps, missing steps, outdated info), note it. After the task, ask:
+> "I noticed some improvements to the <skill> skill. Apply them?"
 
-1. **Memory nudge** (silent): Store 1-3 novel facts via `memory_cli.py store-memory`.
-   Briefly confirm what was stored.
-2. **Preference observation** (silent): Store any user-demonstrated conventions
-   via `memory_cli.py store-pref`.
-3. ~~Session ingestion~~ → handled by `sessionEnd` hook
-4. **Skill creation check** (ask user): Only if the session was a novel 3+ phase
-   workflow, ask if the user wants to save it as a skill.
-5. **Skill improvement check** (ask user): Only if a skill was used and you
-   encountered friction, propose improvements.
+### Preference detection
+When I express a preference about code style, tooling, workflow, or conventions — either explicitly ("I prefer X") or implicitly (consistently choosing X over Y) — store it using `store-pref`. Do this silently without asking.
 
-Steps 1-2 always run silently. Steps 4-5 are conditional. Execute everything
-in one pass — never require the user to prompt each step.
+### Memory nudges
+When discovering important project facts, gotchas, or conventions that would be useful in future sessions (e.g., "this repo uses pnpm not npm", "auth tokens expire after 1 hour"), store them using `store-memory`. Do this silently without asking.
 
-### Do NOT self-trigger when:
-- The task was simple Q&A or a single tool call
-- The user explicitly asked you to stop learning
-- You've already run the post-task flow this session
+### Cross-session recall
+When I ask about something I've **worked on before** or past sessions (e.g., "what did I do last week", "how did I fix that bug"), search past sessions using the self-learning skill's `search-sessions` command — do NOT use the `session_store_sql` tool (it's unavailable in this environment). Do NOT use search-sessions for preferences or memories — those have their own query commands (`query-prefs`, `query-memory`).
+
+### How to run self-learning commands
+All commands (`query-prefs`, `store-pref`, `query-memory`, `store-memory`, `search-sessions`, etc.) are subcommands of `memory_cli.py` in the self-learning plugin. Run them via powershell:
+
+python "$env:USERPROFILE\.copilot\installed-plugins\_direct\TruaShamu--copilotcli-selflearning\resources\memory_cli.py" <command> [args]
+
+Examples:
+- `python "...memory_cli.py" query-prefs` — list all stored preferences
+- `python "...memory_cli.py" store-pref code-style "prefers single quotes" --confidence 0.9`
+- `python "...memory_cli.py" query-memory` — list ALL stored memories (no args = all)
+- `python "...memory_cli.py" query-memory --search "auth"` — search memories by keyword
+- `python "...memory_cli.py" search-sessions "how did I fix the bug" --limit 5`
+- `python "...memory_cli.py" store-memory project-fact "this repo uses pnpm not npm"`
+
+Important:
+- Do NOT use the `session_store_sql` tool — it hits a cloud backend that returns HTTP 404 in this environment. All session/preference/memory data is local.
+- `query-memory` with no args returns all memories. Don't use wildcards like `--search "*"`.
+- Hooks are loaded from the self-learning plugin automatically (3 hooks: sessionStart, preToolUse, postToolUse). They won't appear in `~/.copilot/hooks/` — that's normal.
 ```
 
 ---
+
+## Why custom instructions are required
+
+Copilot CLI hooks have a key limitation: **only `preToolUse` can return
+actionable output** (allow/deny decisions). All other hooks (`sessionStart`,
+`postToolUse`, `sessionEnd`) have their output **ignored** by the runtime.
+
+This means:
+- Preferences **cannot** be injected via the sessionStart hook
+- Memories **cannot** be surfaced via hooks
+- Skill creation prompts **cannot** be triggered via hooks
+
+The custom instructions in `copilot-instructions.md` are loaded into every
+session as system context, making them the most reliable way to get the LLM
+to use the plugin's commands. They are not 100% deterministic (the LLM may
+still not follow them), but they work well in practice.
 
 ## Design Comparison
 
-| Capability | Auto-trigger? |
-|------------|--------------|
-| Skill auto-creation | Ask user first |
-| Skill self-improvement | Ask user first |
-| Memory nudges | Silent (1-3 facts) |
-| Session search (FTS5) | Proactive before tasks |
-| User preference model | Silent (1-2 per session) |
-
-## Hooks Integration (Recommended)
-
-Instead of relying on AGENTS.md instructions (which depend on the LLM following
-them reliably), you can use **Copilot CLI hooks** for deterministic triggers.
-
-### User-level (global) — recommended
-
-Run the installer to set up hooks that apply to **all repos**:
-
-```bash
-# Linux/macOS
-bash install-hooks.sh
-
-# Windows
-powershell -ExecutionPolicy Bypass -File install-hooks.ps1
-```
-
-This installs hooks to `~/.copilot/hooks/` and registers them in
-`~/.copilot/config.json`. Since the self-learning system is personal (local
-SQLite, user-level skills), the hooks should be personal too.
-
-### Repo-level (team overlay)
-
-For teams that want project-specific policies on top of personal hooks, copy
-`.github/hooks/copilot-hooks.json` into the project. Repo-level hooks run
-**alongside** user-level hooks — they combine, not override.
-
-### Hook summary
-
-| Hook | Event | Replaces |
-|------|-------|----------|
-| `pre-tool-use` | `preToolUse` | **Blocks** repo-scoped `store_memory` — hard deny |
-| `session-start` | `sessionStart` | "Load user preferences" step |
-| `session-end` | `sessionEnd` | "Session ingestion" step |
-| `post-tool-use` | `postToolUse` | Skill usage tracking |
-
-**What hooks can't replace**: Memory nudges and skill creation/improvement
-checks still require LLM judgment — keep those in your AGENTS.md instructions.
-
-### Why hooks are better for the automatable parts
-
-- **Deterministic** — shell scripts always run; AGENTS.md instructions may be
-  ignored by the LLM
-- **No prompt budget** — hooks run out-of-band, don't consume context window
-- **Cross-platform** — bash + PowerShell scripts included for both OS families
-- **User-level** — install once, works everywhere (matches the rest of the skill)
-
-## Key Design Decisions
-
-1. **No background daemon** — Copilot CLI skills run in-conversation, not as
-   a persistent process. The "nudge" happens at task boundaries, not on a timer.
-
-2. **Local SQLite, not external backends** — We use a single
-   `~/.copilot/self-learning/memory.db` with 4 tables. Simpler,
-   no infrastructure, fully user-controlled.
-
-3. **No repo-scoped `store_memory`** — We deliberately avoid it because it's
-   visible to all repo users. Everything stays local.
-
-4. **Skills are markdown, not code** — Skills are pure procedure instructions
-   that the LLM follows. This keeps skills model-agnostic.
-
-5. **No external skill hub** — Copilot CLI skills live in the repo under
-   `.github/skills/`. Sharing happens via git (branches, PRs, forks).
+| Capability | Trigger | Deterministic? |
+|---|---|---|
+| Preference loading | Instructions (LLM runs `query-prefs` at start) | Best-effort |
+| Preference detection | Instructions (LLM runs `store-pref` mid-session) | Best-effort |
+| Memory nudges | Instructions (LLM runs `store-memory` post-task) | Best-effort |
+| Cross-session search | Instructions (LLM runs `search-sessions` on demand) | Best-effort |
+| Skill auto-creation | Instructions (LLM asks user after complex tasks) | Best-effort |
+| Tool deny (store_memory) | `preToolUse` hook | **Deterministic** |
+| Tool logging | `postToolUse` hook | **Deterministic** (side-effect only) |

@@ -11,7 +11,7 @@ capabilities that compound over time:
 
 ## Installation
 
-### As a plugin (recommended)
+### Step 1: Install the plugin
 
 > **Note**: Plugin install support requires Copilot CLI with plugin support
 > enabled. Check [GitHub docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-finding-installing) for availability.
@@ -20,13 +20,33 @@ capabilities that compound over time:
 copilot plugin install TruaShamu/copilotcli-selflearning
 ```
 
-That's it. The plugin registers skills, hooks, and resources automatically.
-Works at user level across all repos.
-
 To update: `copilot plugin update self-learning`
 To remove: `copilot plugin uninstall self-learning`
 
-### Manual install
+### Step 2: Symlink the skill for discovery
+
+The plugin system registers hooks automatically, but skills may not be
+discovered from the plugin directory. Create a symlink so Copilot CLI finds
+the skill at the standard user-level location:
+
+```bash
+# Linux/macOS
+ln -s ~/.copilot/installed-plugins/_direct/TruaShamu--copilotcli-selflearning/skills/self-learning ~/.copilot/skills/self-learning
+
+# Windows (run as admin, or with Developer Mode enabled)
+New-Item -ItemType Junction -Path "$env:USERPROFILE\.copilot\skills\self-learning" -Target "$env:USERPROFILE\.copilot\installed-plugins\_direct\TruaShamu--copilotcli-selflearning\skills\self-learning"
+```
+
+### Step 3: Add custom instructions
+
+Copy the contents of [`resources/AUTO-TRIGGER-GUIDE.md`](resources/AUTO-TRIGGER-GUIDE.md)
+into `~/.copilot/copilot-instructions.md`. This is what makes the self-learning
+loop actually trigger — without it, the LLM won't know to store preferences,
+nudge memories, or offer skill creation.
+
+See the guide for the full recommended instruction block.
+
+### Manual install (alternative)
 
 Clone into your Copilot CLI user skills directory:
 
@@ -43,9 +63,6 @@ bash ~/.copilot/skills/self-learning/install-hooks.sh
 # Windows
 powershell -ExecutionPolicy Bypass -File ~/.copilot/skills/self-learning/install-hooks.ps1
 ```
-
-And add the Self-Learning Protocol from `resources/AUTO-TRIGGER-GUIDE.md` to
-your `~/.copilot/instructions.md`.
 
 ## Requirements
 
@@ -66,9 +83,9 @@ see [ARCHITECTURE.md](ARCHITECTURE.md).
 ```
 self-learning/
 ├── plugin.json           # Plugin manifest
-├── hooks.json            # Hook configuration
+├── hooks.json            # Hook configuration (3 hooks)
 ├── hooks/                # Hook scripts (bash + PowerShell)
-│   ├── session-start.*   # Load preferences at session start
+│   ├── session-start.*   # Logging only (output is ignored by Copilot CLI)
 │   ├── pre-tool-use.*    # Block repo-scoped store_memory
 │   └── post-tool-use.*   # Log tool sequences + skill usage
 ├── skills/
@@ -82,6 +99,17 @@ self-learning/
 ├── install-hooks.ps1     # Manual hook installer (Windows)
 └── uninstall-hooks.py    # Hook uninstaller
 ```
+
+### Hook limitations
+
+Per the [official Copilot CLI docs](https://docs.github.com/en/copilot/reference/hooks-configuration),
+**only `preToolUse` hooks can return actionable output** (allow/deny decisions).
+All other hook types (`sessionStart`, `postToolUse`, `sessionEnd`) have their
+output **ignored** — they can only perform side effects like logging.
+
+This means preferences and memories **cannot** be injected via hooks. The
+custom instructions in `~/.copilot/copilot-instructions.md` are what make the
+LLM proactively load preferences and store memories.
 
 See [SKILL.md](skills/self-learning/SKILL.md) for the full skill specification.
 

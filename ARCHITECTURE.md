@@ -122,9 +122,14 @@ so they work from any install path.
 
 | Hook | Event | Behavior |
 |------|-------|----------|
-| pre-tool-use | preToolUse | Blocks `store_memory` (returns deny) |
-| session-start | sessionStart | Queries prefs, emits as context |
-| post-tool-use | postToolUse | Logs tool to tool_usage + skill to skill_usage |
+| pre-tool-use | preToolUse | Blocks `store_memory` (returns deny) — **only hook with actionable output** |
+| session-start | sessionStart | Logging only (output is **ignored** by Copilot CLI runtime) |
+| post-tool-use | postToolUse | Logs tool to tool_usage + skill to skill_usage (output ignored) |
+
+> **Important**: Per the [official docs](https://docs.github.com/en/copilot/reference/hooks-configuration),
+> only `preToolUse` can return actionable output (allow/deny). All other hooks
+> have their output discarded. Preference loading is handled via custom
+> instructions in `~/.copilot/copilot-instructions.md`, not hooks.
 
 ## Evolution Engine
 
