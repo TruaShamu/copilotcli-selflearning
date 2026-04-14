@@ -49,28 +49,38 @@ spanning different complexity levels (easy bug fixes → multi-file refactors).
 
 ### Protocol
 
+Three phases isolate the effect of self-learning from the overhead of the hook
+system itself. Phase B acts as the **control condition** — hooks are installed
+but memory is empty, so any difference between A and B reflects hook overhead,
+while the difference between B and C reflects actual learning.
+
 ```
-Phase A — Baseline (no self-learning)
-──────────────────────────────────────
+Phase A — Baseline (no hooks)
+─────────────────────────────
 1. Uninstall hooks: python uninstall-hooks.py
 2. Delete or rename ~/.copilot/self-learning/memory.db
 3. Run each SWE-bench task with vanilla Copilot CLI
 4. Grade with SWE-bench harness (pass/fail per task)
 5. Record additional metrics (see below)
 
-Phase B — Cold start (self-learning enabled, empty memory)
-──────────────────────────────────────────────────────────
+Phase B — Control (hooks installed, empty memory)
+─────────────────────────────────────────────────
 1. Install hooks: bash install-hooks.sh
 2. Start with fresh memory.db
 3. Run the SAME tasks in order
 4. Record metrics after each task
+   → Isolates hook overhead from learning benefit.
+   → B vs A = cost of hooks; C vs B = value of learning.
 
-Phase C — Warm system (after 30+ sessions)
-──────────────────────────────────────────
+Phase C — Warm system (hooks + populated memory)
+────────────────────────────────────────────────
 1. Use the memory.db from Phase B (now populated)
 2. Run the same tasks again
 3. Record metrics — this is the "learned" condition
 ```
+
+**Key comparison:** The headline result is **C vs B** (same hooks, memory vs
+no memory), not C vs A. Report both, but C vs B is the clean signal.
 
 ### Metrics
 
@@ -99,9 +109,9 @@ python resources/memory_cli.py query-tool-sequences --patterns --window-size 3
 ```
 
 **Expected result:** Phase C should show higher SWE-bench pass rate, fewer
-tool calls, fewer errors, and faster completion than Phase A. Phase B should
-be roughly equal to Phase A (cold start hasn't learned yet) but should improve
-across tasks as memory accumulates.
+tool calls, fewer errors, and faster completion than Phase B (the control).
+Phase B should be roughly equal to Phase A — if B is noticeably worse than A,
+the hook system itself is adding overhead that needs investigation.
 
 ---
 
@@ -172,8 +182,13 @@ No existing Copilot CLI tool does automated workflow discovery from tool traces.
 
 ### Setup
 
-Collect tool usage data from **50+ real sessions** across multiple repos.
-The `postToolUse` hook logs every tool call automatically.
+Collect tool usage data from **50+ sessions**. The `postToolUse` hook logs
+every tool call automatically.
+
+**Bootstrapping:** You don't need 50 separate manual sessions. Each SWE-bench
+task from Experiment 1 counts as one session — running Phases B and C on 50
+tasks gives you 100 sessions of tool trace data for free. Supplement with any
+real project usage you accumulate along the way.
 
 ### Protocol
 
