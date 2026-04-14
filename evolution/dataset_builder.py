@@ -171,41 +171,39 @@ class SessionDBMiner:
         if not db_path.exists():
             return EvalDataset()
 
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
 
-        # FTS5 search for sessions mentioning this skill
-        try:
-            rows = conn.execute(
-                """SELECT st.session_id, st.role, st.content, st.turn_index,
-                          s.summary
-                   FROM session_turns_fts fts
-                   JOIN session_turns st ON fts.rowid = st.id
-                   JOIN sessions s ON st.session_id = s.id
-                   WHERE session_turns_fts MATCH ?
-                   ORDER BY rank
-                   LIMIT 50""",
-                (skill_name,),
-            ).fetchall()
-        except Exception:
-            conn.close()
-            return EvalDataset()
+            # FTS5 search for sessions mentioning this skill
+            try:
+                rows = conn.execute(
+                    """SELECT st.session_id, st.role, st.content, st.turn_index,
+                              s.summary
+                       FROM session_turns_fts fts
+                       JOIN session_turns st ON fts.rowid = st.id
+                       JOIN sessions s ON st.session_id = s.id
+                       WHERE session_turns_fts MATCH ?
+                       ORDER BY rank
+                       LIMIT 50""",
+                    (skill_name,),
+                ).fetchall()
+            except Exception:
+                return EvalDataset()
 
-        if not rows:
-            conn.close()
-            return EvalDataset()
+            if not rows:
+                return EvalDataset()
 
-        # Group by session and build conversation snippets
-        sessions: dict[str, list] = {}
-        for row in rows:
-            sid = row["session_id"]
-            if sid not in sessions:
-                sessions[sid] = []
-            sessions[sid].append(
-                f"[{row['role'].upper()}]: {row['content'][:500]}"
-            )
+            # Group by session and build conversation snippets
+            sessions: dict[str, list] = {}
+            for row in rows:
+                sid = row["session_id"]
+                if sid not in sessions:
+                    sessions[sid] = []
+                sessions[sid].append(
+                    f"[{row['role'].upper()}]: {row['content'][:500]}"
+                )
 
-        # Convert each session's snippet into eval examples
+        # Convert each session's snippet into eval examples (conn released)
         lm = dspy.LM(self.config.judge_model)
         examples = []
 
@@ -227,7 +225,6 @@ class SessionDBMiner:
                 except Exception:
                     continue
 
-        conn.close()
         random.shuffle(examples)
         return _split(examples, self.config)
 

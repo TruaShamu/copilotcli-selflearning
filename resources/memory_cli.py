@@ -32,6 +32,7 @@ DB_PATH = os.path.join(DB_DIR, "memory.db")
 def get_conn():
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     _ensure_tables(conn)
     return conn
@@ -103,8 +104,11 @@ def _ensure_tables(conn):
         success INTEGER DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
-    # FTS5 virtual table for full-text search over turns
-    # Check if it exists first (CREATE VIRTUAL TABLE IF NOT EXISTS is supported)
+    # FTS5 virtual table for full-text search over turns.
+    # This is a standalone FTS5 table (not an external content table) — it stores
+    # its own copy of content. This means DELETE/UPDATE on session_turns won't
+    # auto-sync to the FTS index. This is fine because session turns are append-only;
+    # we never delete or modify them after insertion.
     c.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS session_turns_fts USING fts5(
         content, session_id UNINDEXED, role UNINDEXED,
         content_rowid='id', tokenize='porter unicode61'
