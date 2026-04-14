@@ -13,8 +13,9 @@ if [[ ! -f "$MEMORY_CLI" ]]; then
   exit 0
 fi
 
-# Load active preferences and emit them as copilot-readable context
-prefs=$(python3 "$MEMORY_CLI" query-prefs 2>/dev/null || echo "[]")
+# Load active preferences with decay scoring — filters stale prefs,
+# sorts by relevance, caps at top 20, and bumps access counts.
+prefs=$(python3 "$MEMORY_CLI" query-prefs --with-decay 2>/dev/null || echo "[]")
 pref_count=$(echo "$prefs" | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
 
 if [[ "$pref_count" -gt 0 ]]; then
