@@ -57,6 +57,9 @@ your `~/.copilot/instructions.md`.
 All memory is local SQLite (`~/.copilot/self-learning/memory.db`). Nothing is
 sent to any external service or repo-scoped storage.
 
+For the full database schema, hook internals, and evolution engine details,
+see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ### Plugin structure
 
 ```
