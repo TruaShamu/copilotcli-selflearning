@@ -4,7 +4,9 @@
 
 set -euo pipefail
 
-MEMORY_CLI="$HOME/.copilot/skills/self-learning/resources/memory_cli.py"
+# Resolve memory_cli.py relative to this script (works for both plugin and manual installs)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MEMORY_CLI="$SCRIPT_DIR/../resources/memory_cli.py"
 
 if [[ ! -f "$MEMORY_CLI" ]]; then
   exit 0

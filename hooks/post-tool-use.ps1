@@ -3,7 +3,8 @@
 
 $ErrorActionPreference = "SilentlyContinue"
 
-$memoryCli = Join-Path $HOME ".copilot\skills\self-learning\resources\memory_cli.py"
+# Resolve memory_cli.py relative to this script (works for both plugin and manual installs)
+$memoryCli = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "..\resources\memory_cli.py"
 
 if (-not (Test-Path $memoryCli)) {
     exit 0
