@@ -91,10 +91,8 @@ the user explicitly invoking the skill — they're wired via AGENTS.md.
 
 Run this at the **beginning** of any session before the first substantive task:
 
-1. **Load preferences** — Query all active prefs and silently incorporate them:
-   ```bash
-   python ~/.copilot/skills/self-learning/resources/memory_cli.py query-prefs
-   ```
+1. **Load preferences** — ✅ *Handled by `sessionStart` hook.* The hook
+   queries `memory_cli.py query-prefs` and injects results automatically.
 2. **Check prior art** — If the user's first message mentions a specific topic,
    file, or feature, search for related past sessions:
    ```bash
@@ -107,7 +105,8 @@ Run this at the **beginning** of any session before the first substantive task:
    python ~/.copilot/skills/self-learning/resources/memory_cli.py query-memory --search "<topic>"
    ```
 
-All three steps are silent — no `ask_user`. Just load context and incorporate.
+Steps 2-3 require LLM judgment (extracting the topic). Step 1 is deterministic
+and handled by the hook — no need to repeat it.
 
 ### Post-Task (autonomous, single pass)
 
@@ -130,13 +129,9 @@ user between steps:
      "<category>" "<fact>" --confidence 0.8
    ```
 
-3. **Session ingestion** (silent) — Archive key turns from this session so
-   future sessions can find them:
-   ```bash
-   python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-turn \
-     "<session_id>" "<role>" "<content>" --repo "<owner/repo>"
-   ```
-   Ingest the user's original request and your final summary at minimum.
+3. **Session ingestion** — ✅ *Handled by `sessionEnd` hook.* The hook
+   archives the session summary automatically via `memory_cli.py ingest-turn`.
+   No need to do this manually.
 
 4. **Skill creation check** (ask user) — If and only if the session involved
    a novel, reusable multi-step workflow (3+ distinct phases), ask:
@@ -153,10 +148,11 @@ user between steps:
    Use `ask_user` with choices: `["Apply improvements", "Skip"]`.
    If approved, proceed to Capability 2.
 
-**Key rule**: Steps 1-3 are silent and always run. Steps 4-5 are conditional
-and use `ask_user` only when there's something worth proposing. The entire
-post-task flow is a single autonomous pass — never require the user to
-prompt each step separately.
+**Key rule**: Steps 1-2 require LLM judgment and always run silently. Step 3
+is handled by the `sessionEnd` hook. Steps 4-5 are conditional and use
+`ask_user` only when there's something worth proposing. The entire post-task
+flow is a single autonomous pass — never require the user to prompt each step
+separately.
 
 ### Do NOT self-trigger when:
 - The task was simple Q&A or a single tool call
@@ -467,14 +463,17 @@ or historical decisions that inform the current task.
 
 ### Session ingestion guidance
 
-To build up the search corpus, ingest session transcripts at session end.
-The AGENTS.md self-trigger protocol should include:
+Session transcripts are automatically archived by the `sessionEnd` hook.
+For manual ingestion or bulk imports, use:
 
-```markdown
-5. **Session archival** (silent): At the end of substantial sessions, ingest
-   the conversation transcript into the local search index:
-   python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-turn \
-     "<session_id>" "<role>" "<content>" --repo "<owner/repo>"
+```bash
+# Bulk ingest from JSON
+echo '{"session_id":"...","repo":"...","turns":[...]}' | \
+  python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-session
+
+# Or incrementally per turn
+python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-turn \
+  "<session_id>" "<role>" "<content>" --repo "<owner/repo>"
 ```
 
 ---
@@ -487,8 +486,8 @@ work style, and expertise areas.
 ### ⚠️ Scope constraint
 
 All memory is stored locally in `~/.copilot/self-learning/memory.db`.
-Do NOT use the built-in `store_memory` tool — it's repo-scoped and visible
-to all users in the repository.
+The `preToolUse` hook automatically **blocks** the built-in `store_memory`
+tool, enforcing the local-only policy. No manual vigilance needed.
 
 ### What to track
 
@@ -515,11 +514,8 @@ Store everything locally — preferences, conventions, team rules, personal styl
      --confidence 0.9 --source "Session: <id>"
    ```
 
-3. **Load preferences at session start** — Query the local DB:
-   ```bash
-   python ~/.copilot/skills/self-learning/resources/memory_cli.py query-prefs
-   ```
-   Incorporate active (non-superseded) preferences into your approach.
+3. **Load preferences at session start** — ✅ *Handled by `sessionStart` hook.*
+   Active (non-superseded) preferences are loaded automatically.
 
 4. **Evolve the model** — If a new observation contradicts a stored fact,
    supersede it:
@@ -532,24 +528,29 @@ Store everything locally — preferences, conventions, team rules, personal styl
 
 - All data stays local in `~/.copilot/self-learning/memory.db`
 - Never store credentials, tokens, or secrets
-- Do NOT use `store_memory` — it leaks to all repo users
+- `store_memory` is blocked by the `preToolUse` hook — no repo leakage possible
 - User controls their own DB (can delete, export, inspect anytime)
 
 ---
 
 ## Self-Trigger Guidance (for AGENTS.md)
 
-To enable automatic self-learning without user invocation, add this to
-your `AGENTS.md` or custom instructions:
+With hooks installed, the AGENTS.md protocol is lighter. Add this to your
+`AGENTS.md` or custom instructions — it covers only the parts that need
+LLM judgment (hooks handle the rest):
 
 ```markdown
 ## Self-Learning Protocol
+
+> **Prerequisite**: Install hooks from `.github/hooks/copilot-hooks.json`.
+> Hooks handle: preference loading (sessionStart), session archival (sessionEnd),
+> skill usage tracking (postToolUse), and store_memory blocking (preToolUse).
 
 ### Session Start
 
 At the beginning of each session, before starting work:
 
-1. Load user preferences: `python ~/.copilot/skills/self-learning/resources/memory_cli.py query-prefs`
+1. ~~Load user preferences~~ → handled by `sessionStart` hook
 2. If the user's first message mentions a specific topic, search prior sessions:
    `python ~/.copilot/skills/self-learning/resources/memory_cli.py search-sessions "<topic>" --context 3`
 3. Silently incorporate any loaded context. Briefly mention prior-art hits.
@@ -563,15 +564,11 @@ run all of the following in a single autonomous pass:
    Briefly confirm what was stored.
 2. **Preference observation** (silent): Store any user-demonstrated conventions
    via `memory_cli.py store-pref`.
-3. **Session ingestion** (silent): Archive the user's request and your summary
-   via `memory_cli.py ingest-turn` so future sessions can find this work.
+3. ~~Session ingestion~~ → handled by `sessionEnd` hook
 4. **Skill creation check** (ask user): Only if the session was a novel 3+ phase
    workflow, ask if the user wants to save it as a skill.
 5. **Skill improvement check** (ask user): Only if a skill was used and you
    encountered friction, propose improvements.
-
-Steps 1-3 always run silently. Steps 4-5 are conditional. Execute everything
-in one pass — never require the user to prompt each step.
 
 ### Do NOT self-trigger when:
 - The task was simple Q&A or a single tool call
@@ -581,7 +578,7 @@ in one pass — never require the user to prompt each step.
 ### Memory location:
 - All learning data: ~/.copilot/self-learning/memory.db (local SQLite)
 - CLI tool: ~/.copilot/skills/self-learning/resources/memory_cli.py
-- Do NOT use store_memory — it's repo-scoped and visible to all users.
+- store_memory is blocked by preToolUse hook — no action needed
 ```
 
 ---
@@ -590,4 +587,4 @@ in one pass — never require the user to prompt each step.
 
 - 2026-04-11: Initial prototype — capabilities 1-5
 - 2026-04-14: Removed external project references; made skill self-contained
-- 2026-04-14: Added lifecycle hooks (session-start, post-task) and unified invocation flow for autonomy
+- 2026-04-14: Pruned instructions now handled by Copilot CLI hooks; added hook cross-references

@@ -299,13 +299,9 @@ def cmd_search_sessions(args):
     query = args.query
 
     # FTS5 search with BM25 ranking
-    role_filter = ""
     params = [query]
-    if args.role:
-        role_filter = "AND role = ?"
-        params.append(args.role)
 
-    sql = f"""
+    sql = """
         SELECT
             st.session_id,
             st.role,
@@ -319,10 +315,12 @@ def cmd_search_sessions(args):
         FROM session_turns_fts fts
         JOIN session_turns st ON fts.rowid = st.id
         JOIN sessions s ON st.session_id = s.id
-        WHERE session_turns_fts MATCH ? {role_filter}
-        ORDER BY rank
-        LIMIT ?
+        WHERE session_turns_fts MATCH ?
     """
+    if args.role:
+        sql += " AND role = ?"
+        params.append(args.role)
+    sql += " ORDER BY rank LIMIT ?"
     params.append(args.limit)
 
     rows = conn.execute(sql, params).fetchall()

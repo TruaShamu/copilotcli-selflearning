@@ -17,8 +17,36 @@ Copy this repo into your Copilot CLI user skills directory:
 git clone https://github.com/TruaShamu/copilotcli-selflearning.git ~/.copilot/skills/self-learning
 ```
 
-Then add the Self-Learning Protocol from `RESOURCES/AUTO-TRIGGER-GUIDE.md` to
+Then add the Self-Learning Protocol from `resources/AUTO-TRIGGER-GUIDE.md` to
 your `~/.copilot/instructions.md`.
+
+### Hooks (recommended)
+
+Run the installer to set up user-level hooks that apply to **all repos**:
+
+```bash
+# Linux/macOS
+bash install-hooks.sh
+
+# Windows
+powershell -ExecutionPolicy Bypass -File install-hooks.ps1
+```
+
+This copies hook scripts to `~/.copilot/hooks/` and registers them in
+`~/.copilot/config.json`. Four hooks are installed:
+
+| Hook | What it does |
+|------|-------------|
+| `preToolUse` | **Blocks** repo-scoped `store_memory` — enforces local-only policy |
+| `sessionStart` | Auto-loads user preferences from memory |
+| `sessionEnd` | Archives the session summary for future recall |
+| `postToolUse` | Tracks skill invocations and outcomes |
+
+Since hooks are user-level, they work across all repos without any per-project
+setup. To uninstall: `python uninstall-hooks.py`
+
+Repo-level hooks (`.github/hooks/`) are also included for teams that want to
+layer project-specific policies on top.
 
 ## Requirements
 

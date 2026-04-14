@@ -7,14 +7,21 @@ to enable the self-learning loop without manual invocation.
 
 ## Recommended AGENTS.md Addition
 
+> With hooks installed (see below), this protocol is lighter — only the parts
+> requiring LLM judgment remain.
+
 ```markdown
 ## Self-Learning Protocol
+
+> **Prerequisite**: Install hooks from `.github/hooks/copilot-hooks.json`.
+> Hooks handle: preference loading, session archival, skill tracking, and
+> store_memory blocking.
 
 ### Session Start
 
 At the beginning of each session, before starting work:
 
-1. Load user preferences: `python ~/.copilot/skills/self-learning/resources/memory_cli.py query-prefs`
+1. ~~Load user preferences~~ → handled by `sessionStart` hook
 2. If the user's first message mentions a specific topic, search prior sessions:
    `python ~/.copilot/skills/self-learning/resources/memory_cli.py search-sessions "<topic>" --context 3`
 3. Silently incorporate any loaded context. Briefly mention prior-art hits.
@@ -28,14 +35,13 @@ run all of the following in a single autonomous pass:
    Briefly confirm what was stored.
 2. **Preference observation** (silent): Store any user-demonstrated conventions
    via `memory_cli.py store-pref`.
-3. **Session ingestion** (silent): Archive the user's request and your summary
-   via `memory_cli.py ingest-turn` so future sessions can find this work.
+3. ~~Session ingestion~~ → handled by `sessionEnd` hook
 4. **Skill creation check** (ask user): Only if the session was a novel 3+ phase
    workflow, ask if the user wants to save it as a skill.
 5. **Skill improvement check** (ask user): Only if a skill was used and you
    encountered friction, propose improvements.
 
-Steps 1-3 always run silently. Steps 4-5 are conditional. Execute everything
+Steps 1-2 always run silently. Steps 4-5 are conditional. Execute everything
 in one pass — never require the user to prompt each step.
 
 ### Do NOT self-trigger when:
@@ -56,6 +62,53 @@ in one pass — never require the user to prompt each step.
 | Session search (FTS5) | Proactive before tasks |
 | User preference model | Silent (1-2 per session) |
 
+## Hooks Integration (Recommended)
+
+Instead of relying on AGENTS.md instructions (which depend on the LLM following
+them reliably), you can use **Copilot CLI hooks** for deterministic triggers.
+
+### User-level (global) — recommended
+
+Run the installer to set up hooks that apply to **all repos**:
+
+```bash
+# Linux/macOS
+bash install-hooks.sh
+
+# Windows
+powershell -ExecutionPolicy Bypass -File install-hooks.ps1
+```
+
+This installs hooks to `~/.copilot/hooks/` and registers them in
+`~/.copilot/config.json`. Since the self-learning system is personal (local
+SQLite, user-level skills), the hooks should be personal too.
+
+### Repo-level (team overlay)
+
+For teams that want project-specific policies on top of personal hooks, copy
+`.github/hooks/copilot-hooks.json` into the project. Repo-level hooks run
+**alongside** user-level hooks — they combine, not override.
+
+### Hook summary
+
+| Hook | Event | Replaces |
+|------|-------|----------|
+| `pre-tool-use` | `preToolUse` | **Blocks** repo-scoped `store_memory` — hard deny |
+| `session-start` | `sessionStart` | "Load user preferences" step |
+| `session-end` | `sessionEnd` | "Session ingestion" step |
+| `post-tool-use` | `postToolUse` | Skill usage tracking |
+
+**What hooks can't replace**: Memory nudges and skill creation/improvement
+checks still require LLM judgment — keep those in your AGENTS.md instructions.
+
+### Why hooks are better for the automatable parts
+
+- **Deterministic** — shell scripts always run; AGENTS.md instructions may be
+  ignored by the LLM
+- **No prompt budget** — hooks run out-of-band, don't consume context window
+- **Cross-platform** — bash + PowerShell scripts included for both OS families
+- **User-level** — install once, works everywhere (matches the rest of the skill)
+
 ## Key Design Decisions
 
 1. **No background daemon** — Copilot CLI skills run in-conversation, not as
@@ -68,8 +121,8 @@ in one pass — never require the user to prompt each step.
 3. **No repo-scoped `store_memory`** — We deliberately avoid it because it's
    visible to all repo users. Everything stays local.
 
-3. **Skills are markdown, not code** — Skills are pure procedure instructions
+4. **Skills are markdown, not code** — Skills are pure procedure instructions
    that the LLM follows. This keeps skills model-agnostic.
 
-4. **No external skill hub** — Copilot CLI skills live in the repo under
+5. **No external skill hub** — Copilot CLI skills live in the repo under
    `.github/skills/`. Sharing happens via git (branches, PRs, forks).
