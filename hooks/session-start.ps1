@@ -10,7 +10,9 @@ if (-not (Test-Path $memoryCli)) {
     exit 0
 }
 
-$prefs = python $memoryCli query-prefs 2>$null
+# Use --with-decay to filter stale prefs, sort by relevance, cap at top 20,
+# and bump access counts for loaded prefs.
+$prefs = python $memoryCli query-prefs --with-decay 2>$null
 if (-not $prefs) { exit 0 }
 
 try {
