@@ -27,12 +27,15 @@ if ($toolName -ne "skill") {
 
 $skillName = "unknown"
 try {
-    $args = $parsed.arguments
-    if (-not $args) { $args = $parsed.toolInput }
-    if ($args -is [string]) { $args = $args | ConvertFrom-Json }
-    if ($args.skill) { $skillName = $args.skill }
+    $toolArgs = $parsed.arguments
+    if (-not $toolArgs) { $toolArgs = $parsed.toolInput }
+    if ($toolArgs -is [string]) { $toolArgs = $toolArgs | ConvertFrom-Json }
+    if ($toolArgs.skill) { $skillName = $toolArgs.skill }
 } catch {}
 
+# Hook can only detect success/failure from the event JSON.
+# The other outcomes (partial, skipped) are only available via manual
+# invocation of memory_cli.py log-skill.
 $outcome = "success"
 if ($parsed.error -or ($parsed.toolResult -and $parsed.toolResult.isError)) {
     $outcome = "failure"

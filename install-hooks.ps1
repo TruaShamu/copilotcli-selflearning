@@ -31,6 +31,8 @@ config_path = r'$configPath'
 with open(config_path) as f:
     config = json.load(f)
 
+# Copilot CLI expands ~ in hook paths per the config spec.
+# See: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference
 hooks_dir = '~/.copilot/hooks'
 
 self_learning_hooks = {

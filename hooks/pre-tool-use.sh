@@ -9,6 +9,8 @@ set -euo pipefail
 
 event=$(cat)
 
+# Event field is 'toolName' per Copilot CLI hook schema.
+# Fallback to 'tool_name' for forward-compat if the schema changes.
 tool_name=$(echo "$event" | python3 -c "
 import sys, json
 e = json.load(sys.stdin)

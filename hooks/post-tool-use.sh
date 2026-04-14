@@ -13,6 +13,8 @@ fi
 # Read the tool event from stdin
 event=$(cat)
 
+# Event field is 'toolName' per Copilot CLI hook schema.
+# Fallback to 'tool_name' for forward-compat if the schema changes.
 tool_name=$(echo "$event" | python3 -c "
 import sys, json
 e = json.load(sys.stdin)
@@ -29,15 +31,16 @@ import sys, json
 e = json.load(sys.stdin)
 args = e.get('arguments', e.get('toolInput', {}))
 if isinstance(args, str):
-    import json as j
-    args = j.loads(args)
+    args = json.loads(args)
 print(args.get('skill', 'unknown'))
 " 2>/dev/null || echo "unknown")
 
+# Hook can only detect success/failure from the event JSON.
+# The other outcomes (partial, skipped) are only available via manual
+# invocation of memory_cli.py log-skill.
 success=$(echo "$event" | python3 -c "
 import sys, json
 e = json.load(sys.stdin)
-# Check for error indicators
 if e.get('error') or e.get('toolResult', {}).get('isError'):
     print('failure')
 else:
