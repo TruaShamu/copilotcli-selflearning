@@ -7,31 +7,7 @@ For LLM skill instructions, see [skills/self-learning/SKILL.md](skills/self-lear
 
 ## System Overview
 
-```
-┌──────────────────────────────────────────────────────┐
-│  Copilot CLI Session                                  │
-│                                                       │
-│  ┌─────────────┐   hooks fire    ┌────────────────┐  │
-│  │ sessionStart ├───────────────►│ Load prefs     │  │
-│  │ preToolUse   ├───────────────►│ Block store_   │  │
-│  │ postToolUse  ├───────────────►│  memory        │  │
-│  │ sessionEnd   ├───────────────►│ Log tools      │  │
-│  └─────────────┘                │ Archive session │  │
-│                                  └───────┬────────┘  │
-│  ┌─────────────┐                         │           │
-│  │ SKILL.md    │  LLM judgment           │           │
-│  │ (in-prompt) ├────────────────►        │           │
-│  └─────────────┘  memory nudges,         │           │
-│                   skill creation         │           │
-└──────────────────────────────────────────┼───────────┘
-                                           │
-                                           ▼
-                              ┌─────────────────────┐
-                              │  ~/.copilot/         │
-                              │  self-learning/      │
-                              │  memory.db (SQLite)  │
-                              └─────────────────────┘
-```
+![Architecture diagram](architecture.png)
 
 ## Database Schema
 
