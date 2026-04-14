@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 import random
-import sqlite3
 import re
+import sqlite3
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
@@ -175,8 +175,9 @@ class SessionDBMiner:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
 
-        # Escape hyphens for FTS5 — default tokenizer treats them as column operators
-        safe_name = re.sub(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")', r'"\1"', skill_name)
+        # Escape hyphens for FTS5 (canonical impl: resources/memory_cli.py fts5_escape)
+        _fts5_hyphen_re = re.compile(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")')
+        safe_name = _fts5_hyphen_re.sub(r'"\1"', skill_name)
 
         try:
             rows = conn.execute(

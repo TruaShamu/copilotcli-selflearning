@@ -23,8 +23,10 @@ import argparse
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 DB_DIR = os.path.expanduser("~/.copilot/self-learning")
@@ -32,6 +34,33 @@ DB_PATH = os.path.join(DB_DIR, "memory.db")
 
 # Copilot CLI's native session store (read-only, may not exist)
 NATIVE_SESSION_STORE = os.path.expanduser("~/.copilot/session-store.db")
+
+# FTS5 hyphen escaping — the default tokenizer treats unquoted hyphens as
+# column prefix operators ("no such column" errors). Wrap hyphenated words
+# in double-quotes to treat them as literal terms.
+_FTS5_HYPHEN_RE = re.compile(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")')
+
+
+def fts5_escape(query: str) -> str:
+    """Escape a query string for safe use with FTS5 MATCH."""
+    return _FTS5_HYPHEN_RE.sub(r'"\1"', query)
+
+
+@contextmanager
+def native_conn():
+    """Context manager for read-only access to Copilot CLI's native session store.
+
+    Yields a sqlite3.Connection or None if the store doesn't exist.
+    """
+    if not os.path.exists(NATIVE_SESSION_STORE):
+        yield None
+        return
+    conn = sqlite3.connect(f"file:{NATIVE_SESSION_STORE}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def get_conn():
@@ -315,18 +344,16 @@ def cmd_stats(args):
     stats["db_size_kb"] = round(os.path.getsize(DB_PATH) / 1024, 1)
 
     # Native session store (session-store.db)
-    native_conn = _get_native_conn()
-    if native_conn:
-        try:
-            stats["native_store_path"] = NATIVE_SESSION_STORE
-            stats["native_store_size_kb"] = round(os.path.getsize(NATIVE_SESSION_STORE) / 1024, 1)
-            stats["native_sessions"] = native_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-            stats["native_turns"] = native_conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
-            stats["native_search_index"] = native_conn.execute("SELECT COUNT(*) FROM search_index").fetchone()[0]
-        except Exception:
-            pass
-        finally:
-            native_conn.close()
+    with native_conn() as nconn:
+        if nconn:
+            try:
+                stats["native_store_path"] = NATIVE_SESSION_STORE
+                stats["native_store_size_kb"] = round(os.path.getsize(NATIVE_SESSION_STORE) / 1024, 1)
+                stats["native_sessions"] = nconn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+                stats["native_turns"] = nconn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
+                stats["native_search_index"] = nconn.execute("SELECT COUNT(*) FROM search_index").fetchone()[0]
+            except Exception:
+                pass
 
     print(json.dumps(stats, indent=2))
 
@@ -375,18 +402,6 @@ def cmd_decay_report(args):
 # ---------------------------------------------------------------------------
 # Session transcript storage & FTS5 search
 # ---------------------------------------------------------------------------
-
-def _get_native_conn():
-    """Get a read-only connection to Copilot CLI's native session-store.db.
-
-    Returns None if the native store doesn't exist.
-    """
-    if not os.path.exists(NATIVE_SESSION_STORE):
-        return None
-    conn = sqlite3.connect(f"file:{NATIVE_SESSION_STORE}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 
 def cmd_log_tool(args):
     """Log a single tool invocation for a session."""
@@ -481,125 +496,117 @@ def cmd_search_sessions(args):
     Queries ~/.copilot/session-store.db which has FTS5-indexed data
     across all past Copilot CLI sessions.
     """
-    native_conn = _get_native_conn()
-    if not native_conn:
-        print(json.dumps({
-            "error": "Native session store not found at " + NATIVE_SESSION_STORE,
-            "hint": "Cross-session search requires Copilot CLI's local session-store.db",
-        }))
-        return
+    with native_conn() as nconn:
+        if not nconn:
+            print(json.dumps({
+                "error": "Native session store not found at " + NATIVE_SESSION_STORE,
+                "hint": "Cross-session search requires Copilot CLI's local session-store.db",
+            }))
+            return
 
-    query = args.query
-    # Escape hyphens for FTS5 — unquoted hyphens are treated as column
-    # prefix operators which causes "no such column" errors.
-    import re
-    safe_query = re.sub(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")', r'"\1"', query)
+        safe_query = fts5_escape(args.query)
 
-    sql = """
-        SELECT
-            si.session_id,
-            si.source_type,
-            si.content,
-            s.summary,
-            s.repository AS repo,
-            s.branch,
-            s.created_at AS started_at,
-            rank
-        FROM search_index si
-        JOIN sessions s ON si.session_id = s.id
-        WHERE search_index MATCH ?
-        ORDER BY rank
-        LIMIT ?
-    """
+        sql = """
+            SELECT
+                si.session_id,
+                si.source_type,
+                si.content,
+                s.summary,
+                s.repository AS repo,
+                s.branch,
+                s.created_at AS started_at,
+                rank
+            FROM search_index si
+            JOIN sessions s ON si.session_id = s.id
+            WHERE search_index MATCH ?
+            ORDER BY rank
+            LIMIT ?
+        """
 
-    try:
-        rows = native_conn.execute(sql, (safe_query, args.limit)).fetchall()
-    except Exception as e:
-        print(json.dumps({"error": f"FTS5 query failed: {e}", "query": query}))
-        native_conn.close()
-        return
+        try:
+            rows = nconn.execute(sql, (safe_query, args.limit)).fetchall()
+        except Exception as e:
+            print(json.dumps({"error": f"FTS5 query failed: {e}", "query": args.query}))
+            return
 
-    if not rows:
-        print(json.dumps({"query": query, "results": [], "count": 0}))
-        native_conn.close()
-        return
+        if not rows:
+            print(json.dumps({"query": args.query, "results": [], "count": 0}))
+            return
 
-    # Group by session
-    sessions = {}
-    for row in rows:
-        sid = row["session_id"]
-        if sid not in sessions:
-            sessions[sid] = {
-                "session_id": sid,
-                "summary": row["summary"],
-                "repo": row["repo"],
-                "branch": row["branch"],
-                "started_at": row["started_at"],
-                "matches": [],
-            }
-        sessions[sid]["matches"].append({
-            "source_type": row["source_type"],
-            "content": row["content"][:500],
-            "rank": row["rank"],
-        })
+        # Group by session
+        sessions = {}
+        for row in rows:
+            sid = row["session_id"]
+            if sid not in sessions:
+                sessions[sid] = {
+                    "session_id": sid,
+                    "summary": row["summary"],
+                    "repo": row["repo"],
+                    "branch": row["branch"],
+                    "started_at": row["started_at"],
+                    "matches": [],
+                }
+            sessions[sid]["matches"].append({
+                "source_type": row["source_type"],
+                "content": row["content"][:500],
+                "rank": row["rank"],
+            })
 
-    # Load surrounding turns for context
-    if args.context > 0:
-        for sid, sdata in sessions.items():
-            context_rows = native_conn.execute(
-                """SELECT turn_index, user_message, assistant_response
-                   FROM turns
-                   WHERE session_id = ?
-                   ORDER BY turn_index
-                   LIMIT ?""",
-                (sid, args.context * 2),
-            ).fetchall()
-            sdata["context_window"] = []
-            for r in context_rows:
-                if r["user_message"]:
-                    sdata["context_window"].append({
-                        "turn_index": r["turn_index"],
-                        "role": "user",
-                        "content": r["user_message"][:2000],
-                    })
-                if r["assistant_response"]:
-                    sdata["context_window"].append({
-                        "turn_index": r["turn_index"],
-                        "role": "assistant",
-                        "content": r["assistant_response"][:2000],
-                    })
+        # Load surrounding turns for context
+        if args.context > 0:
+            for sid, sdata in sessions.items():
+                context_rows = nconn.execute(
+                    """SELECT turn_index, user_message, assistant_response
+                       FROM turns
+                       WHERE session_id = ?
+                       ORDER BY turn_index
+                       LIMIT ?""",
+                    (sid, args.context * 2),
+                ).fetchall()
+                sdata["context_window"] = []
+                for r in context_rows:
+                    if r["user_message"]:
+                        sdata["context_window"].append({
+                            "turn_index": r["turn_index"],
+                            "role": "user",
+                            "content": r["user_message"][:2000],
+                        })
+                    if r["assistant_response"]:
+                        sdata["context_window"].append({
+                            "turn_index": r["turn_index"],
+                            "role": "assistant",
+                            "content": r["assistant_response"][:2000],
+                        })
 
-    native_conn.close()
-    result = {
-        "query": query,
-        "results": list(sessions.values()),
-        "count": len(sessions),
-        "total_matches": len(rows),
-    }
-    print(json.dumps(result, indent=2))
+        result = {
+            "query": args.query,
+            "results": list(sessions.values()),
+            "count": len(sessions),
+            "total_matches": len(rows),
+        }
+        print(json.dumps(result, indent=2))
 
 
 def cmd_recent_sessions(args):
     """List recent sessions from Copilot CLI's native session store."""
-    native_conn = _get_native_conn()
-    if not native_conn:
-        print(json.dumps({"error": "Native session store not found at " + NATIVE_SESSION_STORE}))
-        return
+    with native_conn() as nconn:
+        if not nconn:
+            print(json.dumps({"error": "Native session store not found at " + NATIVE_SESSION_STORE}))
+            return
 
-    rows = native_conn.execute(
-        """SELECT s.id, s.repository AS repo, s.branch, s.summary,
-                  s.created_at AS started_at, s.updated_at AS ended_at,
-                  COUNT(t.id) AS turn_count
-           FROM sessions s
-           LEFT JOIN turns t ON s.id = t.session_id
-           GROUP BY s.id
-           ORDER BY s.created_at DESC
-           LIMIT ?""",
-        (args.limit,),
-    ).fetchall()
-    result = [dict(r) for r in rows]
-    native_conn.close()
-    print(json.dumps(result, indent=2))
+        rows = nconn.execute(
+            """SELECT s.id, s.repository AS repo, s.branch, s.summary,
+                      s.created_at AS started_at, s.updated_at AS ended_at,
+                      COUNT(t.id) AS turn_count
+               FROM sessions s
+               LEFT JOIN turns t ON s.id = t.session_id
+               GROUP BY s.id
+               ORDER BY s.created_at DESC
+               LIMIT ?""",
+            (args.limit,),
+        ).fetchall()
+        result = [dict(r) for r in rows]
+        print(json.dumps(result, indent=2))
 
 
 
