@@ -42,12 +42,6 @@ self_learning_hooks = {
         'powershell': f'powershell -ExecutionPolicy Bypass -File {hooks_dir}/self-learning-session-start.ps1',
         'timeoutSec': 15
     }],
-    'sessionEnd': [{
-        'type': 'command',
-        'bash': f'{hooks_dir}/self-learning-session-end.sh',
-        'powershell': f'powershell -ExecutionPolicy Bypass -File {hooks_dir}/self-learning-session-end.ps1',
-        'timeoutSec': 15
-    }],
     'preToolUse': [{
         'type': 'command',
         'bash': f'{hooks_dir}/self-learning-pre-tool-use.sh',

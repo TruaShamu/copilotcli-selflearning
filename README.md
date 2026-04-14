@@ -54,8 +54,9 @@ your `~/.copilot/instructions.md`.
 
 ## Architecture
 
-All memory is local SQLite (`~/.copilot/self-learning/memory.db`). Nothing is
-sent to any external service or repo-scoped storage.
+All memory is local SQLite (`~/.copilot/self-learning/memory.db`). Cross-session
+search reads Copilot CLI's native `~/.copilot/session-store.db` in read-only mode.
+Nothing is sent to any external service or repo-scoped storage.
 
 For the full database schema, hook internals, and evolution engine details,
 see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -68,7 +69,6 @@ self-learning/
 ├── hooks.json            # Hook configuration
 ├── hooks/                # Hook scripts (bash + PowerShell)
 │   ├── session-start.*   # Load preferences at session start
-│   ├── session-end.*     # Archive session summary
 │   ├── pre-tool-use.*    # Block repo-scoped store_memory
 │   └── post-tool-use.*   # Log tool sequences + skill usage
 ├── skills/
