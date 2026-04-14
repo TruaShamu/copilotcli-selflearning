@@ -44,8 +44,7 @@ python memory_cli.py query-skills [--name <name>]
 python memory_cli.py log-learning "<intent>" "<phases>" <tool_count> --candidate
 python memory_cli.py query-learnings [--candidates-only]
 
-# Sessions & search
-python memory_cli.py ingest-turn <session_id> <role> "<content>" --repo "..."
+# Sessions & search (reads Copilot CLI's native session-store.db)
 python memory_cli.py search-sessions "<query>" --context 3 --limit 30
 python memory_cli.py recent-sessions --limit 10
 
@@ -116,9 +115,9 @@ user between steps:
      "<category>" "<fact>" --confidence 0.8
    ```
 
-3. **Session ingestion** — ✅ *Handled by `sessionEnd` hook.* The hook
-   archives the session summary automatically via `memory_cli.py ingest-turn`.
-   No need to do this manually.
+3. **Session data** — ✅ *Handled automatically by Copilot CLI.* Session
+   transcripts are stored in `~/.copilot/session-store.db` by the runtime.
+   The `search-sessions` and `recent-sessions` commands read this store directly.
 
 4. **Skill creation check** (ask user) — If and only if the session involved
    a novel, reusable multi-step workflow (3+ distinct phases), ask:
@@ -136,7 +135,7 @@ user between steps:
    If approved, proceed to Capability 2.
 
 **Key rule**: Steps 1-2 require LLM judgment and always run silently. Step 3
-is handled by the `sessionEnd` hook. Steps 4-5 are conditional and use
+is automatic (Copilot CLI handles it). Steps 4-5 are conditional and use
 `ask_user` only when there's something worth proposing. The entire post-task
 flow is a single autonomous pass — never require the user to prompt each step
 separately.
@@ -396,16 +395,8 @@ or historical decisions that inform the current task.
 
 ### Procedure
 
-1. **Ingest sessions** — At the end of each session, save the transcript:
-   ```bash
-   # Bulk ingest from JSON
-   echo '{"session_id":"...","repo":"...","turns":[...]}' | \
-     python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-session
-
-   # Or incrementally per turn
-   python ~/.copilot/skills/self-learning/resources/memory_cli.py ingest-turn \
-     "<session_id>" "user" "<message>" --repo "<owner/repo>"
-   ```
+1. **Session data** — Copilot CLI automatically stores all session transcripts
+   in `~/.copilot/session-store.db`. No manual ingestion needed.
 
 2. **Search** — FTS5 full-text search with BM25 ranking:
    ```bash
@@ -448,9 +439,11 @@ or historical decisions that inform the current task.
    python ~/.copilot/skills/self-learning/resources/memory_cli.py recent-sessions --limit 10
    ```
 
-### Session ingestion guidance
+### Session data
 
-Session transcripts are automatically archived by the `sessionEnd` hook.
+Session transcripts are automatically stored by Copilot CLI in
+`~/.copilot/session-store.db`. The `search-sessions` and `recent-sessions`
+commands read this store directly in read-only mode.
 
 ---
 

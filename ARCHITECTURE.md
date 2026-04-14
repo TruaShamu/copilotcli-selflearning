@@ -78,52 +78,24 @@ Session workflows flagged as potential skill auto-creation candidates.
 | skill_candidate | INTEGER | 1 if flagged as candidate |
 | created_at | TEXT | ISO datetime |
 
-### sessions
+### Cross-session search (native store)
 
-Session metadata for transcript storage.
+Session transcripts are stored in Copilot CLI's native `~/.copilot/session-store.db`.
+This is a separate SQLite database managed by Copilot CLI itself — the self-learning
+system reads it in read-only mode for cross-session search and evolution data mining.
 
-| Column | Type | Notes |
-|--------|------|-------|
-| id | TEXT PK | Session identifier |
-| repo | TEXT | owner/repo |
-| branch | TEXT | Git branch |
-| summary | TEXT | Session summary |
-| started_at | TEXT | ISO datetime |
-| ended_at | TEXT | ISO datetime, set on close |
-
-### session_turns
-
-Individual conversation turns within a session.
-
-| Column | Type | Notes |
-|--------|------|-------|
-| id | INTEGER PK | Auto-increment |
-| session_id | TEXT FK | References sessions(id) |
-| turn_index | INTEGER NOT NULL | 0-based order within session |
-| role | TEXT NOT NULL | user, assistant, tool, system |
-| content | TEXT NOT NULL | Turn content |
-| created_at | TEXT | ISO datetime |
-
-### session_turns_fts
-
-FTS5 virtual table for full-text search over session turns.
-
-```sql
-CREATE VIRTUAL TABLE session_turns_fts USING fts5(
-    content,
-    session_id UNINDEXED,
-    role UNINDEXED,
-    content_rowid='id',
-    tokenize='porter unicode61'
-)
-```
-
-**Design note**: This is a standalone FTS5 table (not an external content table).
-It stores its own copy of content. Session turns are append-only — we never
-delete or update them, so no sync triggers are needed.
+**Native store schema** (read-only, managed by Copilot CLI):
+- `sessions` — id, repository, branch, summary, created_at, updated_at
+- `turns` — session_id, turn_index, user_message, assistant_response, timestamp
+- `search_index` — FTS5 virtual table (content, session_id, source_type)
+- `checkpoints`, `session_files`, `session_refs` — additional metadata
 
 **FTS5 query syntax**: `keywords` (AND), `word1 OR word2`, `"exact phrase"`,
 `prefix*`, `word1 NOT word2`.
+
+**Note**: The native FTS5 store uses the default tokenizer (not porter). Hyphens
+in queries are treated as column prefix operators — the search command automatically
+wraps hyphenated terms in double-quotes to avoid errors.
 
 ### tool_usage
 
@@ -152,7 +124,6 @@ so they work from any install path.
 |------|-------|----------|
 | pre-tool-use | preToolUse | Blocks `store_memory` (returns deny) |
 | session-start | sessionStart | Queries prefs, emits as context |
-| session-end | sessionEnd | Archives session summary via ingest-turn |
 | post-tool-use | postToolUse | Logs tool to tool_usage + skill to skill_usage |
 
 ## Evolution Engine
@@ -167,4 +138,4 @@ framework. Key design decisions:
   fast proxy during optimization. Full LLM-as-judge scoring is used on the
   holdout set.
 - **Three eval data sources**: synthetic (LLM-generated), sessiondb (mined from
-  FTS5 store), golden (hand-curated JSONL).
+  Copilot CLI's native session-store.db via FTS5), golden (hand-curated JSONL).

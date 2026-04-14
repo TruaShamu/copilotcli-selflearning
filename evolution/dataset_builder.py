@@ -146,9 +146,9 @@ class SyntheticDatasetBuilder:
 
 
 class SessionDBMiner:
-    """Mine evaluation data from our local SQLite FTS5 session store.
+    """Mine evaluation data from Copilot CLI's native session store.
 
-    Searches ~/.copilot/self-learning/memory.db for session turns
+    Searches ~/.copilot/session-store.db (FTS5-indexed) for session turns
     relevant to the skill, then uses an LLM to convert them into
     (task_input, expected_behavior) eval pairs.
     """
@@ -171,45 +171,65 @@ class SessionDBMiner:
         if not db_path.exists():
             return EvalDataset()
 
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.row_factory = sqlite3.Row
+        # Open read-only to avoid locking the active session store
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
 
-            # FTS5 search for sessions mentioning this skill
-            try:
-                rows = conn.execute(
-                    """SELECT st.session_id, st.role, st.content, st.turn_index,
-                              s.summary
-                       FROM session_turns_fts fts
-                       JOIN session_turns st ON fts.rowid = st.id
-                       JOIN sessions s ON st.session_id = s.id
-                       WHERE session_turns_fts MATCH ?
-                       ORDER BY rank
-                       LIMIT 50""",
-                    (skill_name,),
-                ).fetchall()
-            except Exception:
-                return EvalDataset()
+        # Escape hyphens for FTS5 — default tokenizer treats them as column operators
+        safe_name = re.sub(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")', r'"\1"', skill_name)
 
-            if not rows:
-                return EvalDataset()
+        try:
+            rows = conn.execute(
+                """SELECT si.session_id, si.source_type, si.content,
+                          s.summary
+                   FROM search_index si
+                   JOIN sessions s ON si.session_id = s.id
+                   WHERE search_index MATCH ?
+                   ORDER BY rank
+                   LIMIT 50""",
+                (safe_name,),
+            ).fetchall()
+        except Exception:
+            conn.close()
+            return EvalDataset()
 
-            # Group by session and build conversation snippets
-            sessions: dict[str, list] = {}
-            for row in rows:
-                sid = row["session_id"]
-                if sid not in sessions:
-                    sessions[sid] = []
-                sessions[sid].append(
-                    f"[{row['role'].upper()}]: {row['content'][:500]}"
-                )
+        if not rows:
+            conn.close()
+            return EvalDataset()
 
-        # Convert each session's snippet into eval examples (conn released)
+        # Group by session and build conversation snippets
+        sessions: dict[str, list] = {}
+        for row in rows:
+            sid = row["session_id"]
+            if sid not in sessions:
+                sessions[sid] = []
+            sessions[sid].append(
+                f"[{row['source_type'].upper()}]: {row['content'][:500]}"
+            )
+
+        # Also load actual turns for richer context
+        for sid in list(sessions.keys())[:10]:
+            turn_rows = conn.execute(
+                """SELECT turn_index, user_message, assistant_response
+                   FROM turns WHERE session_id = ?
+                   ORDER BY turn_index LIMIT 6""",
+                (sid,),
+            ).fetchall()
+            for r in turn_rows:
+                if r["user_message"]:
+                    sessions[sid].append(f"[USER]: {r['user_message'][:500]}")
+                if r["assistant_response"]:
+                    sessions[sid].append(f"[ASSISTANT]: {r['assistant_response'][:500]}")
+
+        conn.close()
+
+        # Convert each session's snippet into eval examples
         lm = dspy.LM(self.config.judge_model)
         examples = []
 
         with dspy.context(lm=lm):
-            for sid, turns in list(sessions.items())[:10]:  # Cap at 10 sessions
-                snippet = "\n\n".join(turns[:6])  # First 6 turns
+            for sid, turns in list(sessions.items())[:10]:
+                snippet = "\n\n".join(turns[:6])
                 try:
                     result = self.converter(
                         skill_name=skill_name,

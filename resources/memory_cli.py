@@ -83,23 +83,6 @@ def _ensure_tables(conn):
         skill_candidate INTEGER DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
-    # Session transcripts — stores conversation turns for FTS5 search
-    c.execute("""CREATE TABLE IF NOT EXISTS sessions (
-        id TEXT PRIMARY KEY,
-        repo TEXT,
-        branch TEXT,
-        summary TEXT,
-        started_at TEXT DEFAULT (datetime('now')),
-        ended_at TEXT
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS session_turns (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        session_id TEXT NOT NULL REFERENCES sessions(id),
-        turn_index INTEGER NOT NULL,
-        role TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now'))
-    )""")
     # Tool usage log — captures every tool call per session for sequence analysis
     c.execute("""CREATE TABLE IF NOT EXISTS tool_usage (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,15 +91,6 @@ def _ensure_tables(conn):
         seq_index INTEGER NOT NULL,
         success INTEGER DEFAULT 1,
         created_at TEXT DEFAULT (datetime('now'))
-    )""")
-    # FTS5 virtual table for full-text search over turns.
-    # This is a standalone FTS5 table (not an external content table) — it stores
-    # its own copy of content. This means DELETE/UPDATE on session_turns won't
-    # auto-sync to the FTS index. This is fine because session turns are append-only;
-    # we never delete or modify them after insertion.
-    c.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS session_turns_fts USING fts5(
-        content, session_id UNINDEXED, role UNINDEXED,
-        content_rowid='id', tokenize='porter unicode61'
     )""")
     conn.commit()
     # Schema migration: add decay columns if missing
@@ -340,10 +314,6 @@ def cmd_stats(args):
     stats["db_path"] = DB_PATH
     stats["db_size_kb"] = round(os.path.getsize(DB_PATH) / 1024, 1)
 
-    # Legacy session store (memory.db)
-    stats["legacy_sessions"] = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-    stats["legacy_session_turns"] = conn.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0]
-
     # Native session store (session-store.db)
     native_conn = _get_native_conn()
     if native_conn:
@@ -353,15 +323,11 @@ def cmd_stats(args):
             stats["native_sessions"] = native_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             stats["native_turns"] = native_conn.execute("SELECT COUNT(*) FROM turns").fetchone()[0]
             stats["native_search_index"] = native_conn.execute("SELECT COUNT(*) FROM search_index").fetchone()[0]
-            stats["session_source"] = "native"
         except Exception:
-            stats["session_source"] = "legacy"
+            pass
         finally:
             native_conn.close()
-    else:
-        stats["session_source"] = "legacy"
 
-    print(json.dumps(stats, indent=2))
     print(json.dumps(stats, indent=2))
 
 
@@ -508,91 +474,26 @@ def cmd_query_tool_sequences(args):
     }, indent=2))
 
 
-def cmd_ingest_session(args):
-    """Ingest a session transcript from JSON (stdin or --file).
-
-    Expected JSON format:
-    {
-      "session_id": "abc-123",
-      "repo": "owner/repo",
-      "branch": "main",
-      "summary": "...",
-      "turns": [
-        {"role": "user", "content": "..."},
-        {"role": "assistant", "content": "..."}
-      ]
-    }
-    """
-    conn = get_conn()
-    if args.file:
-        with open(args.file) as f:
-            data = json.load(f)
-    else:
-        data = json.load(sys.stdin)
-
-    sid = data["session_id"]
-    # Upsert session metadata
-    conn.execute(
-        """INSERT INTO sessions (id, repo, branch, summary, started_at)
-           VALUES (?, ?, ?, ?, datetime('now'))
-           ON CONFLICT(id) DO UPDATE SET
-             summary = COALESCE(excluded.summary, summary),
-             ended_at = datetime('now')""",
-        (sid, data.get("repo"), data.get("branch"), data.get("summary")),
-    )
-
-    turns = data.get("turns", [])
-    for i, turn in enumerate(turns):
-        role = turn.get("role", "unknown")
-        content = turn.get("content", "")
-        if not content.strip():
-            continue
-        # Insert turn
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO session_turns (session_id, turn_index, role, content) VALUES (?,?,?,?)",
-            (sid, i, role, content),
-        )
-        row_id = c.lastrowid
-        # Index in FTS5
-        c.execute(
-            "INSERT INTO session_turns_fts (rowid, content, session_id, role) VALUES (?,?,?,?)",
-            (row_id, content, sid, role),
-        )
-
-    conn.commit()
-    print(json.dumps({
-        "status": "ingested",
-        "session_id": sid,
-        "turns_stored": len(turns),
-    }))
-
 
 def cmd_search_sessions(args):
-    """FTS5 full-text search across session transcripts.
+    """FTS5 full-text search across Copilot CLI's native session store.
 
-    Tries the native Copilot CLI session-store.db first (833+ sessions with
-    FTS5 already indexed). Falls back to the self-learning memory.db store
-    if the native store isn't available.
-
-    Output is designed to be fed to an LLM subagent for summarization.
+    Queries ~/.copilot/session-store.db which has FTS5-indexed data
+    across all past Copilot CLI sessions.
     """
     native_conn = _get_native_conn()
-    if native_conn:
-        _search_native(native_conn, args)
-        native_conn.close()
-    else:
-        _search_legacy(get_conn(), args)
+    if not native_conn:
+        print(json.dumps({
+            "error": "Native session store not found at " + NATIVE_SESSION_STORE,
+            "hint": "Cross-session search requires Copilot CLI's local session-store.db",
+        }))
+        return
 
-
-def _search_native(conn, args):
-    """Search the native Copilot CLI session-store.db via its FTS5 index."""
     query = args.query
     # Escape hyphens for FTS5 — unquoted hyphens are treated as column
     # prefix operators which causes "no such column" errors.
     import re
     safe_query = re.sub(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")', r'"\1"', query)
-    params = [safe_query]
 
     sql = """
         SELECT
@@ -610,17 +511,17 @@ def _search_native(conn, args):
         ORDER BY rank
         LIMIT ?
     """
-    params.append(args.limit)
 
     try:
-        rows = conn.execute(sql, params).fetchall()
-    except Exception:
-        # FTS5 query syntax error — fall back to legacy
-        _search_legacy(get_conn(), args)
+        rows = native_conn.execute(sql, (safe_query, args.limit)).fetchall()
+    except Exception as e:
+        print(json.dumps({"error": f"FTS5 query failed: {e}", "query": query}))
+        native_conn.close()
         return
 
     if not rows:
-        print(json.dumps({"query": query, "results": [], "count": 0, "source": "native"}))
+        print(json.dumps({"query": query, "results": [], "count": 0}))
+        native_conn.close()
         return
 
     # Group by session
@@ -645,7 +546,7 @@ def _search_native(conn, args):
     # Load surrounding turns for context
     if args.context > 0:
         for sid, sdata in sessions.items():
-            context_rows = conn.execute(
+            context_rows = native_conn.execute(
                 """SELECT turn_index, user_message, assistant_response
                    FROM turns
                    WHERE session_id = ?
@@ -668,170 +569,38 @@ def _search_native(conn, args):
                         "content": r["assistant_response"][:2000],
                     })
 
+    native_conn.close()
     result = {
         "query": query,
         "results": list(sessions.values()),
         "count": len(sessions),
         "total_matches": len(rows),
-        "source": "native",
-    }
-    print(json.dumps(result, indent=2))
-
-
-def _search_legacy(conn, args):
-    """Search the self-learning memory.db FTS5 store (fallback)."""
-    query = args.query
-    params = [query]
-
-    sql = """
-        SELECT
-            st.session_id,
-            st.role,
-            st.turn_index,
-            st.content,
-            s.summary,
-            s.repo,
-            s.branch,
-            s.started_at,
-            rank
-        FROM session_turns_fts fts
-        JOIN session_turns st ON fts.rowid = st.id
-        JOIN sessions s ON st.session_id = s.id
-        WHERE session_turns_fts MATCH ?
-    """
-    if args.role:
-        sql += " AND role = ?"
-        params.append(args.role)
-    sql += " ORDER BY rank LIMIT ?"
-    params.append(args.limit)
-
-    rows = conn.execute(sql, params).fetchall()
-
-    if not rows:
-        print(json.dumps({"query": query, "results": [], "count": 0, "source": "legacy"}))
-        return
-
-    # Group by session
-    sessions = {}
-    for row in rows:
-        sid = row["session_id"]
-        if sid not in sessions:
-            sessions[sid] = {
-                "session_id": sid,
-                "summary": row["summary"],
-                "repo": row["repo"],
-                "branch": row["branch"],
-                "started_at": row["started_at"],
-                "matches": [],
-            }
-        sessions[sid]["matches"].append({
-            "role": row["role"],
-            "turn_index": row["turn_index"],
-            "content": row["content"][:500],
-            "rank": row["rank"],
-        })
-
-    if args.context > 0:
-        for sid, sdata in sessions.items():
-            match_indices = {m["turn_index"] for m in sdata["matches"]}
-            min_idx = max(0, min(match_indices) - args.context)
-            max_idx = max(match_indices) + args.context
-            context_rows = conn.execute(
-                """SELECT turn_index, role, content FROM session_turns
-                   WHERE session_id = ? AND turn_index BETWEEN ? AND ?
-                   ORDER BY turn_index""",
-                (sid, min_idx, max_idx),
-            ).fetchall()
-            sdata["context_window"] = [
-                {"turn_index": r["turn_index"], "role": r["role"], "content": r["content"][:2000]}
-                for r in context_rows
-            ]
-
-    result = {
-        "query": query,
-        "results": list(sessions.values()),
-        "count": len(sessions),
-        "total_matches": len(rows),
-        "source": "legacy",
     }
     print(json.dumps(result, indent=2))
 
 
 def cmd_recent_sessions(args):
-    """List recent sessions with metadata.
-
-    Uses the native Copilot CLI session-store.db if available (much richer data),
-    otherwise falls back to the self-learning memory.db store.
-    """
+    """List recent sessions from Copilot CLI's native session store."""
     native_conn = _get_native_conn()
-    if native_conn:
-        rows = native_conn.execute(
-            """SELECT s.id, s.repository AS repo, s.branch, s.summary,
-                      s.created_at AS started_at, s.updated_at AS ended_at,
-                      COUNT(t.id) AS turn_count
-               FROM sessions s
-               LEFT JOIN turns t ON s.id = t.session_id
-               GROUP BY s.id
-               ORDER BY s.created_at DESC
-               LIMIT ?""",
-            (args.limit,),
-        ).fetchall()
-        result = [dict(r) for r in rows]
-        for r in result:
-            r["source"] = "native"
-        native_conn.close()
-        print(json.dumps(result, indent=2))
-    else:
-        conn = get_conn()
-        rows = conn.execute(
-            """SELECT s.id, s.repo, s.branch, s.summary, s.started_at, s.ended_at,
-                      COUNT(st.id) as turn_count
-               FROM sessions s
-               LEFT JOIN session_turns st ON s.id = st.session_id
-               GROUP BY s.id
-               ORDER BY s.started_at DESC
-               LIMIT ?""",
-            (args.limit,),
-        ).fetchall()
-        result = [dict(r) for r in rows]
-        for r in result:
-            r["source"] = "legacy"
-        print(json.dumps(result, indent=2))
+    if not native_conn:
+        print(json.dumps({"error": "Native session store not found at " + NATIVE_SESSION_STORE}))
+        return
 
+    rows = native_conn.execute(
+        """SELECT s.id, s.repository AS repo, s.branch, s.summary,
+                  s.created_at AS started_at, s.updated_at AS ended_at,
+                  COUNT(t.id) AS turn_count
+           FROM sessions s
+           LEFT JOIN turns t ON s.id = t.session_id
+           GROUP BY s.id
+           ORDER BY s.created_at DESC
+           LIMIT ?""",
+        (args.limit,),
+    ).fetchall()
+    result = [dict(r) for r in rows]
+    native_conn.close()
+    print(json.dumps(result, indent=2))
 
-def cmd_ingest_turn(args):
-    """Ingest a single turn into an existing or new session.
-
-    Lightweight alternative to ingest-session — call once per turn
-    so the agent can stream transcripts incrementally.
-    """
-    conn = get_conn()
-    # Ensure session exists
-    conn.execute(
-        """INSERT INTO sessions (id, repo, branch, summary)
-           VALUES (?, ?, ?, ?)
-           ON CONFLICT(id) DO UPDATE SET ended_at = datetime('now')""",
-        (args.session_id, args.repo, None, args.summary),
-    )
-    # Get next turn index
-    row = conn.execute(
-        "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM session_turns WHERE session_id = ?",
-        (args.session_id,),
-    ).fetchone()
-    turn_index = row[0]
-
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO session_turns (session_id, turn_index, role, content) VALUES (?,?,?,?)",
-        (args.session_id, turn_index, args.role, args.content),
-    )
-    row_id = c.lastrowid
-    c.execute(
-        "INSERT INTO session_turns_fts (rowid, content, session_id, role) VALUES (?,?,?,?)",
-        (row_id, args.content, args.session_id, args.role),
-    )
-    conn.commit()
-    print(json.dumps({"status": "stored", "session_id": args.session_id, "turn_index": turn_index}))
 
 
 def main():
@@ -918,22 +687,9 @@ def main():
     p.add_argument("--window-size", type=int, default=3, help="N-gram window size for pattern detection")
     p.add_argument("--limit", type=int, default=20, help="Max results to return")
 
-    # ingest-session (bulk from JSON)
-    p = sub.add_parser("ingest-session")
-    p.add_argument("--file", default=None, help="JSON file path (reads stdin if omitted)")
-
-    # ingest-turn (single turn, incremental)
-    p = sub.add_parser("ingest-turn")
-    p.add_argument("session_id")
-    p.add_argument("role", choices=["user", "assistant", "tool", "system"])
-    p.add_argument("content")
-    p.add_argument("--repo", default=None)
-    p.add_argument("--summary", default=None)
-
     # search-sessions (FTS5)
     p = sub.add_parser("search-sessions")
     p.add_argument("query", help="FTS5 query: keywords, phrases, OR/AND/NOT, prefix*")
-    p.add_argument("--role", default=None, help="Filter by role (user, assistant, tool)")
     p.add_argument("--limit", type=int, default=30, help="Max matches to return")
     p.add_argument("--context", type=int, default=3, help="Surrounding turns to include per match")
 
@@ -956,8 +712,6 @@ def main():
         "decay-report": cmd_decay_report,
         "log-tool": cmd_log_tool,
         "query-tool-sequences": cmd_query_tool_sequences,
-        "ingest-session": cmd_ingest_session,
-        "ingest-turn": cmd_ingest_turn,
         "search-sessions": cmd_search_sessions,
         "recent-sessions": cmd_recent_sessions,
     }

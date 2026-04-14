@@ -13,9 +13,9 @@ class EvolutionConfig:
     repo_skills_path: Path = field(default_factory=lambda: _find_repo_skills())
     user_skills_path: Path = field(default_factory=lambda: Path.home() / ".copilot" / "skills")
 
-    # Session DB for eval data mining
+    # Session DB for eval data mining (Copilot CLI's native store)
     session_db_path: Path = field(
-        default_factory=lambda: Path.home() / ".copilot" / "self-learning" / "memory.db"
+        default_factory=lambda: Path.home() / ".copilot" / "session-store.db"
     )
 
     # Optimization parameters
