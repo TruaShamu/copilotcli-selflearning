@@ -13,6 +13,7 @@ Usage:
   python memory_cli.py query-skills [--name <name>]
   python memory_cli.py query-learnings [--candidates-only]
   python memory_cli.py supersede-pref <old_id> <new_fact> [--confidence 0.9]
+  python memory_cli.py decay-report [--dormant-only]
   python memory_cli.py stats
 
 DB location: ~/.copilot/self-learning/memory.db
@@ -20,10 +21,11 @@ DB location: ~/.copilot/self-learning/memory.db
 
 import argparse
 import json
+import math
 import os
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 DB_DIR = os.path.expanduser("~/.copilot/self-learning")
 DB_PATH = os.path.join(DB_DIR, "memory.db")
@@ -114,6 +116,53 @@ def _ensure_tables(conn):
         content_rowid='id', tokenize='porter unicode61'
     )""")
     conn.commit()
+    # Schema migration: add decay columns if missing
+    _migrate_decay_columns(conn)
+
+
+# ---------------------------------------------------------------------------
+# Decay / relevance scoring
+# ---------------------------------------------------------------------------
+
+# Half-life ~23 days: after 23 days with no access, relevance drops to 50%.
+_DECAY_LAMBDA = 0.03
+# Minimum relevance to include in session context
+_DECAY_THRESHOLD = 0.1
+# Max preferences to inject at session start
+_MAX_PREFS_LOADED = 20
+
+
+def _migrate_decay_columns(conn):
+    """Add last_accessed_at and access_count columns for memory decay.
+
+    Safe to run repeatedly — checks column existence first.
+    """
+    for table in ("preferences", "personal_memory"):
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if "last_accessed_at" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN last_accessed_at TEXT")
+        if "access_count" not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN access_count INTEGER DEFAULT 0")
+    conn.commit()
+
+
+def _relevance_score(confidence, created_at, last_accessed_at, access_count):
+    """Compute relevance = confidence × recency × access_boost.
+
+    - recency:      exp(-λ × days_since_last_access)   λ=0.03, half-life ~23 days
+    - access_boost: min(2.0, 1.0 + 0.1 × access_count)
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)  # naive UTC for DB compat
+    ref_time = last_accessed_at or created_at or now.isoformat()
+    try:
+        ref_dt = datetime.fromisoformat(ref_time).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        ref_dt = now
+    days_elapsed = max(0, (now - ref_dt).total_seconds() / 86400)
+
+    recency = math.exp(-_DECAY_LAMBDA * days_elapsed)
+    access_boost = min(2.0, 1.0 + 0.1 * (access_count or 0))
+    return (confidence or 0.7) * recency * access_boost
 
 
 def cmd_store_pref(args):
@@ -158,19 +207,48 @@ def cmd_log_learning(args):
 
 def cmd_query_prefs(args):
     conn = get_conn()
-    q = "SELECT id, category, fact, confidence, source, created_at FROM preferences WHERE superseded_by IS NULL"
+    q = """SELECT id, category, fact, confidence, source, created_at,
+                  last_accessed_at, access_count
+           FROM preferences WHERE superseded_by IS NULL"""
     params = []
     if args.category:
         q += " AND category = ?"
         params.append(args.category)
     q += " ORDER BY confidence DESC, created_at DESC"
     rows = [dict(r) for r in conn.execute(q, params)]
+
+    if args.with_decay:
+        # Score each preference and filter/sort by relevance
+        for row in rows:
+            row["relevance"] = round(_relevance_score(
+                row["confidence"], row["created_at"],
+                row["last_accessed_at"], row["access_count"],
+            ), 4)
+        rows = [r for r in rows if r["relevance"] >= _DECAY_THRESHOLD]
+        rows.sort(key=lambda r: r["relevance"], reverse=True)
+        rows = rows[:_MAX_PREFS_LOADED]
+
+        # Bump access counts for loaded prefs
+        loaded_ids = [r["id"] for r in rows]
+        if loaded_ids:
+            placeholders = ",".join("?" for _ in loaded_ids)
+            conn.execute(
+                f"""UPDATE preferences
+                    SET last_accessed_at = datetime('now'),
+                        access_count = COALESCE(access_count, 0) + 1
+                    WHERE id IN ({placeholders})""",
+                loaded_ids,
+            )
+            conn.commit()
+
     print(json.dumps(rows, indent=2))
 
 
 def cmd_query_memory(args):
     conn = get_conn()
-    q = "SELECT id, subject, fact, citations, repo, created_at FROM personal_memory WHERE 1=1"
+    q = """SELECT id, subject, fact, citations, repo, created_at,
+                  last_accessed_at, access_count
+           FROM personal_memory WHERE 1=1"""
     params = []
     if args.subject:
         q += " AND subject = ?"
@@ -180,6 +258,30 @@ def cmd_query_memory(args):
         params.append(f"%{args.search}%")
     q += " ORDER BY created_at DESC LIMIT 20"
     rows = [dict(r) for r in conn.execute(q, params)]
+
+    if args.with_decay:
+        for row in rows:
+            row["relevance"] = round(_relevance_score(
+                row.get("confidence") or 0.7, row["created_at"],
+                row["last_accessed_at"], row["access_count"],
+            ), 4)
+        rows = [r for r in rows if r["relevance"] >= _DECAY_THRESHOLD]
+        rows.sort(key=lambda r: r["relevance"], reverse=True)
+        rows = rows[:_MAX_PREFS_LOADED]
+
+        # Bump access counts for loaded memories
+        loaded_ids = [r["id"] for r in rows]
+        if loaded_ids:
+            placeholders = ",".join("?" for _ in loaded_ids)
+            conn.execute(
+                f"""UPDATE personal_memory
+                    SET last_accessed_at = datetime('now'),
+                        access_count = COALESCE(access_count, 0) + 1
+                    WHERE id IN ({placeholders})""",
+                loaded_ids,
+            )
+            conn.commit()
+
     print(json.dumps(rows, indent=2))
 
 
@@ -237,6 +339,47 @@ def cmd_stats(args):
     stats["db_path"] = DB_PATH
     stats["db_size_kb"] = round(os.path.getsize(DB_PATH) / 1024, 1)
     print(json.dumps(stats, indent=2))
+
+
+def cmd_decay_report(args):
+    """Show all preferences scored by relevance, flagging dormant ones."""
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT id, category, fact, confidence, source, created_at,
+                  last_accessed_at, access_count
+           FROM preferences WHERE superseded_by IS NULL
+           ORDER BY created_at DESC""",
+    ).fetchall()
+
+    scored = []
+    for row in rows:
+        r = dict(row)
+        r["relevance"] = round(_relevance_score(
+            r["confidence"], r["created_at"],
+            r["last_accessed_at"], r["access_count"],
+        ), 4)
+        r["status"] = "active" if r["relevance"] >= _DECAY_THRESHOLD else "dormant"
+        scored.append(r)
+
+    scored.sort(key=lambda r: r["relevance"], reverse=True)
+
+    active = [r for r in scored if r["status"] == "active"]
+    dormant = [r for r in scored if r["status"] == "dormant"]
+
+    report = {
+        "total_preferences": len(scored),
+        "active": len(active),
+        "dormant": len(dormant),
+        "threshold": _DECAY_THRESHOLD,
+        "max_loaded": _MAX_PREFS_LOADED,
+        "decay_half_life_days": round(math.log(2) / _DECAY_LAMBDA, 1),
+        "preferences": scored,
+    }
+
+    if args.dormant_only:
+        report["preferences"] = dormant
+
+    print(json.dumps(report, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -562,11 +705,17 @@ def main():
     # query-prefs
     p = sub.add_parser("query-prefs")
     p.add_argument("--category", default=None)
+    p.add_argument("--with-decay", action="store_true",
+                   help="Apply relevance decay: score, filter, sort, and cap results. "
+                        "NOTE: bumps access counts for loaded prefs (mutates DB).")
 
     # query-memory
     p = sub.add_parser("query-memory")
     p.add_argument("--subject", default=None)
     p.add_argument("--search", default=None)
+    p.add_argument("--with-decay", action="store_true",
+                   help="Apply relevance decay: score, filter, sort, and cap results. "
+                        "NOTE: bumps access counts for loaded memories (mutates DB).")
 
     # query-skills
     p = sub.add_parser("query-skills")
@@ -584,6 +733,12 @@ def main():
 
     # stats
     sub.add_parser("stats")
+
+    # decay-report
+    p = sub.add_parser("decay-report",
+                       help="Show all preferences scored by relevance decay")
+    p.add_argument("--dormant-only", action="store_true",
+                   help="Show only dormant (below-threshold) preferences")
 
     # log-tool (single tool invocation)
     p = sub.add_parser("log-tool")
@@ -633,6 +788,7 @@ def main():
         "query-learnings": cmd_query_learnings,
         "supersede-pref": cmd_supersede_pref,
         "stats": cmd_stats,
+        "decay-report": cmd_decay_report,
         "log-tool": cmd_log_tool,
         "query-tool-sequences": cmd_query_tool_sequences,
         "ingest-session": cmd_ingest_session,
