@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Hook: postToolUse — track skill invocations in the learning log.
-# Fires after every tool use. We filter to only log skill-related tools.
+# Hook: postToolUse — log every tool invocation per session for sequence analysis,
+# and track skill invocations separately in skill_usage.
 
 set -euo pipefail
 
@@ -21,12 +21,33 @@ e = json.load(sys.stdin)
 print(e.get('toolName', e.get('tool_name', '')))
 " 2>/dev/null || echo "")
 
-# Only track skill invocations (the skill tool calls)
-if [[ "$tool_name" != "skill" ]]; then
-  exit 0
+session_id=$(echo "$event" | python3 -c "
+import sys, json
+e = json.load(sys.stdin)
+print(e.get('sessionId', e.get('session_id', 'unknown')))
+" 2>/dev/null || echo "unknown")
+
+is_error=$(echo "$event" | python3 -c "
+import sys, json
+e = json.load(sys.stdin)
+if e.get('error') or e.get('toolResult', {}).get('isError'):
+    print('1')
+else:
+    print('0')
+" 2>/dev/null || echo "0")
+
+# Log every tool call to the sequence table
+if [[ -n "$tool_name" && "$session_id" != "unknown" ]]; then
+  failed_flag=""
+  if [[ "$is_error" == "1" ]]; then
+    failed_flag="--failed"
+  fi
+  python3 "$MEMORY_CLI" log-tool "$session_id" "$tool_name" $failed_flag 2>/dev/null || true
 fi
 
-skill_name=$(echo "$event" | python3 -c "
+# Additionally track skill invocations in skill_usage
+if [[ "$tool_name" == "skill" ]]; then
+  skill_name=$(echo "$event" | python3 -c "
 import sys, json
 e = json.load(sys.stdin)
 args = e.get('arguments', e.get('toolInput', {}))
@@ -35,18 +56,15 @@ if isinstance(args, str):
 print(args.get('skill', 'unknown'))
 " 2>/dev/null || echo "unknown")
 
-# Hook can only detect success/failure from the event JSON.
-# The other outcomes (partial, skipped) are only available via manual
-# invocation of memory_cli.py log-skill.
-success=$(echo "$event" | python3 -c "
-import sys, json
-e = json.load(sys.stdin)
-if e.get('error') or e.get('toolResult', {}).get('isError'):
-    print('failure')
-else:
-    print('success')
-" 2>/dev/null || echo "success")
+  # Hook can only detect success/failure from the event JSON.
+  # The other outcomes (partial, skipped) are only available via manual
+  # invocation of memory_cli.py log-skill.
+  outcome="success"
+  if [[ "$is_error" == "1" ]]; then
+    outcome="failure"
+  fi
 
-if [[ -n "$skill_name" && "$skill_name" != "unknown" ]]; then
-  python3 "$MEMORY_CLI" log-skill "$skill_name" "$success" 2>/dev/null || true
+  if [[ "$skill_name" != "unknown" ]]; then
+    python3 "$MEMORY_CLI" log-skill "$skill_name" "$outcome" 2>/dev/null || true
+  fi
 fi

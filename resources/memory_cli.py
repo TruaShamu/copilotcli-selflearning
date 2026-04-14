@@ -94,6 +94,15 @@ def _ensure_tables(conn):
         content TEXT NOT NULL,
         created_at TEXT DEFAULT (datetime('now'))
     )""")
+    # Tool usage log — captures every tool call per session for sequence analysis
+    c.execute("""CREATE TABLE IF NOT EXISTS tool_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        seq_index INTEGER NOT NULL,
+        success INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now'))
+    )""")
     # FTS5 virtual table for full-text search over turns
     # Check if it exists first (CREATE VIRTUAL TABLE IF NOT EXISTS is supported)
     c.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS session_turns_fts USING fts5(
@@ -220,6 +229,7 @@ def cmd_stats(args):
     stats["skill_candidates"] = conn.execute("SELECT COUNT(*) FROM learning_log WHERE skill_candidate=1").fetchone()[0]
     stats["sessions"] = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     stats["session_turns"] = conn.execute("SELECT COUNT(*) FROM session_turns").fetchone()[0]
+    stats["tool_usage_entries"] = conn.execute("SELECT COUNT(*) FROM tool_usage").fetchone()[0]
     stats["db_path"] = DB_PATH
     stats["db_size_kb"] = round(os.path.getsize(DB_PATH) / 1024, 1)
     print(json.dumps(stats, indent=2))
@@ -228,6 +238,92 @@ def cmd_stats(args):
 # ---------------------------------------------------------------------------
 # Session transcript storage & FTS5 search
 # ---------------------------------------------------------------------------
+
+def cmd_log_tool(args):
+    """Log a single tool invocation for a session."""
+    conn = get_conn()
+    # Auto-increment seq_index per session
+    row = conn.execute(
+        "SELECT COALESCE(MAX(seq_index), -1) + 1 FROM tool_usage WHERE session_id = ?",
+        (args.session_id,),
+    ).fetchone()
+    seq_index = row[0]
+    conn.execute(
+        "INSERT INTO tool_usage (session_id, tool_name, seq_index, success) VALUES (?,?,?,?)",
+        (args.session_id, args.tool_name, seq_index, 0 if args.failed else 1),
+    )
+    conn.commit()
+    print(json.dumps({"status": "logged", "session_id": args.session_id, "tool": args.tool_name, "seq": seq_index}))
+
+
+def cmd_query_tool_sequences(args):
+    """Query tool usage sequences, optionally grouped by session.
+
+    With --patterns, finds recurring subsequences across sessions.
+    """
+    conn = get_conn()
+
+    if args.patterns:
+        # Find repeated tool sequences (window of args.window_size) across sessions
+        rows = conn.execute(
+            """SELECT session_id, seq_index, tool_name
+               FROM tool_usage ORDER BY session_id, seq_index""",
+        ).fetchall()
+
+        # Build per-session sequences
+        sessions = {}
+        for r in rows:
+            sid = r["session_id"]
+            if sid not in sessions:
+                sessions[sid] = []
+            sessions[sid].append(r["tool_name"])
+
+        # Extract n-grams and count
+        from collections import Counter
+        ngram_counts = Counter()
+        window = args.window_size
+        for sid, tools in sessions.items():
+            if len(tools) < window:
+                continue
+            for i in range(len(tools) - window + 1):
+                ngram = tuple(tools[i:i + window])
+                ngram_counts[ngram] += 1
+
+        # Filter to patterns seen in 2+ sessions
+        patterns = [
+            {"sequence": list(k), "count": v}
+            for k, v in ngram_counts.most_common(args.limit)
+            if v >= 2
+        ]
+        print(json.dumps({"patterns": patterns, "window_size": window}, indent=2))
+        return
+
+    # Default: show sequences for a specific session or recent sessions
+    q = "SELECT session_id, seq_index, tool_name, success, created_at FROM tool_usage"
+    params = []
+    if args.session_id:
+        q += " WHERE session_id = ?"
+        params.append(args.session_id)
+    q += " ORDER BY session_id, seq_index"
+    if not args.session_id:
+        q += " LIMIT ?"
+        params.append(args.limit)
+
+    rows = [dict(r) for r in conn.execute(q, params)]
+
+    # Group by session
+    sessions = {}
+    for r in rows:
+        sid = r["session_id"]
+        if sid not in sessions:
+            sessions[sid] = []
+        sessions[sid].append(r["tool_name"])
+
+    print(json.dumps({
+        "sessions": {sid: tools for sid, tools in sessions.items()},
+        "count": len(sessions),
+    }, indent=2))
+
 
 def cmd_ingest_session(args):
     """Ingest a session transcript from JSON (stdin or --file).
@@ -485,6 +581,19 @@ def main():
     # stats
     sub.add_parser("stats")
 
+    # log-tool (single tool invocation)
+    p = sub.add_parser("log-tool")
+    p.add_argument("session_id")
+    p.add_argument("tool_name")
+    p.add_argument("--failed", action="store_true", help="Mark as failed invocation")
+
+    # query-tool-sequences
+    p = sub.add_parser("query-tool-sequences")
+    p.add_argument("--session-id", default=None, help="Filter to a specific session")
+    p.add_argument("--patterns", action="store_true", help="Find recurring tool subsequences across sessions")
+    p.add_argument("--window-size", type=int, default=3, help="N-gram window size for pattern detection")
+    p.add_argument("--limit", type=int, default=20, help="Max results to return")
+
     # ingest-session (bulk from JSON)
     p = sub.add_parser("ingest-session")
     p.add_argument("--file", default=None, help="JSON file path (reads stdin if omitted)")
@@ -520,6 +629,8 @@ def main():
         "query-learnings": cmd_query_learnings,
         "supersede-pref": cmd_supersede_pref,
         "stats": cmd_stats,
+        "log-tool": cmd_log_tool,
+        "query-tool-sequences": cmd_query_tool_sequences,
         "ingest-session": cmd_ingest_session,
         "ingest-turn": cmd_ingest_turn,
         "search-sessions": cmd_search_sessions,
