@@ -101,9 +101,11 @@ def reassemble_skill(frontmatter: str, evolved_body: str) -> str:
 class SkillModule:
     """DSPy module wrapping a skill for GEPA optimization.
 
-    The skill_text is the parameter GEPA evolves. On each forward pass,
-    the module injects the current skill text as instructions and asks
-    the LLM to complete a task following those instructions.
+    The skill_text is passed as an InputField value on each forward() call,
+    NOT stored as a dspy parameter. This means GEPA optimizes the ChainOfThought
+    reasoning instructions (how the LLM reasons about following the skill), not
+    the skill text itself. Skill text evolution is handled externally by the
+    evolution loop in evolve_skill.py, which mutates skill_text between runs.
 
     Requires dspy to be installed. Import is deferred to __init__.
     """

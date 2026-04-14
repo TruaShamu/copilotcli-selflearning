@@ -19,6 +19,17 @@ if TYPE_CHECKING:
 
 from .config import EvolutionConfig
 
+# Common English stopwords filtered from bag-of-words overlap scoring
+_STOPWORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "that", "this", "was", "are",
+    "be", "has", "had", "have", "will", "would", "could", "should", "may",
+    "might", "do", "does", "did", "not", "no", "so", "if", "as", "its",
+    "than", "then", "can", "into", "also", "just", "about", "up", "out",
+    "been", "were", "being", "which", "when", "what", "there", "their",
+    "them", "they", "we", "he", "she", "you", "i", "me", "my", "your",
+})
+
 
 @dataclass
 class FitnessScore:
@@ -121,9 +132,9 @@ def skill_fitness_metric(
     if not agent_output.strip():
         return 0.0
 
-    # Keyword overlap as fast proxy for correctness
-    expected_words = set(expected.lower().split())
-    output_words = set(agent_output.lower().split())
+    # Keyword overlap as fast proxy for correctness (stopwords filtered)
+    expected_words = set(expected.lower().split()) - _STOPWORDS
+    output_words = set(agent_output.lower().split()) - _STOPWORDS
     if expected_words:
         overlap = len(expected_words & output_words) / len(expected_words)
         return min(1.0, 0.3 + (0.7 * overlap))
