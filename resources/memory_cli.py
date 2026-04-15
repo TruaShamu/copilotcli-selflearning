@@ -252,6 +252,45 @@ def cmd_query_prefs(args):
 
 def cmd_query_memory(args):
     conn = get_conn()
+
+    # Summary mode: group by subject, one line per group
+    if args.summary:
+        rows = [dict(r) for r in conn.execute(
+            """SELECT id, subject, fact, created_at, last_accessed_at, access_count
+               FROM personal_memory ORDER BY subject, created_at DESC"""
+        )]
+        if args.with_decay:
+            for r in rows:
+                r["relevance"] = round(_relevance_score(
+                    r.get("confidence") or 0.7, r["created_at"],
+                    r["last_accessed_at"], r["access_count"],
+                ), 4)
+            rows = [r for r in rows if r["relevance"] >= _DECAY_THRESHOLD]
+
+            # Bump access counts
+            loaded_ids = [r["id"] for r in rows]
+            if loaded_ids:
+                placeholders = ",".join("?" for _ in loaded_ids)
+                conn.execute(
+                    f"""UPDATE personal_memory
+                        SET last_accessed_at = datetime('now'),
+                            access_count = COALESCE(access_count, 0) + 1
+                        WHERE id IN ({placeholders})""",
+                    loaded_ids,
+                )
+                conn.commit()
+
+        # Group by subject
+        groups = {}
+        for r in rows:
+            subj = r["subject"] or "general"
+            groups.setdefault(subj, []).append(r["fact"])
+
+        summary = {subj: {"count": len(facts), "facts": facts}
+                   for subj, facts in groups.items()}
+        print(json.dumps(summary, indent=2))
+        return
+
     q = """SELECT id, subject, fact, citations, repo, created_at,
                   last_accessed_at, access_count
            FROM personal_memory WHERE 1=1"""
@@ -654,6 +693,8 @@ def main():
     p = sub.add_parser("query-memory")
     p.add_argument("--subject", default=None)
     p.add_argument("--search", default=None)
+    p.add_argument("--summary", action="store_true",
+                   help="Group memories by subject with counts. Compact output for session start.")
     p.add_argument("--with-decay", action="store_true",
                    help="Apply relevance decay: score, filter, sort, and cap results. "
                         "NOTE: bumps access counts for loaded memories (mutates DB).")
