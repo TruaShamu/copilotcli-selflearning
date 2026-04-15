@@ -6,29 +6,18 @@ Uses LLM-as-judge with rubrics to score agent outputs on:
 - Conciseness (20%) — appropriately concise?
 - Length penalty — penalizes skill bloat near size limit
 
-Returns both scalar scores AND textual feedback for GEPA's reflector.
+Returns both scalar scores AND textual feedback for GEPA's reflector
+via oa.log() in the evaluator.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import dspy
+from typing import Optional
 
 from .config import EvolutionConfig
-
-# Common English stopwords filtered from bag-of-words overlap scoring
-_STOPWORDS = frozenset({
-    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-    "of", "with", "by", "from", "is", "it", "that", "this", "was", "are",
-    "be", "has", "had", "have", "will", "would", "could", "should", "may",
-    "might", "do", "does", "did", "not", "no", "so", "if", "as", "its",
-    "than", "then", "can", "into", "also", "just", "about", "up", "out",
-    "been", "were", "being", "which", "when", "what", "there", "their",
-    "them", "they", "we", "he", "she", "you", "i", "me", "my", "your",
-})
 
 
 @dataclass
@@ -53,34 +42,37 @@ class FitnessScore:
 class LLMJudge:
     """LLM-as-judge scorer with rubric-based evaluation.
 
-    Scores agent outputs on multiple dimensions and provides
-    textual feedback that GEPA uses for reflective mutation.
+    Scores skill quality on multiple dimensions and provides
+    textual feedback that GEPA uses for reflective mutation via oa.log().
+
+    Uses the OpenAI API directly (no DSPy dependency).
     """
 
+    JUDGE_PROMPT = """\
+You are evaluating the quality of a Copilot CLI skill (markdown instructions
+that an AI coding agent follows to complete tasks).
+
+Given:
+- task_input: what the user asked
+- expected_behavior: rubric for a correct response
+- skill_text: the skill instructions being evaluated
+- agent_output: what the agent produced (may be empty for text-only evaluation)
+
+Score on three dimensions (0.0 to 1.0 each):
+1. correctness: Would following this skill produce the correct output for this task?
+2. procedure_following: Does the skill clearly define the right steps/approach?
+3. conciseness: Is the skill appropriately concise without missing key steps?
+
+Respond in JSON:
+{
+  "correctness": 0.0-1.0,
+  "procedure_following": 0.0-1.0,
+  "conciseness": 0.0-1.0,
+  "feedback": "Specific, actionable feedback on what could be improved in the skill text"
+}"""
+
     def __init__(self, config: EvolutionConfig):
-        import dspy
-
-        class JudgeSignature(dspy.Signature):
-            """Evaluate an agent's response against an expected behavior rubric.
-
-            Score on three dimensions (0.0 to 1.0 each):
-            1. correctness: Did the response correctly address the task?
-            2. procedure_following: Did it follow the expected approach?
-            3. conciseness: Was it appropriately concise?
-
-            Provide specific, actionable feedback on what could be improved.
-            """
-            task_input: str = dspy.InputField(desc="The task the agent was given")
-            expected_behavior: str = dspy.InputField(desc="Rubric for what a good response looks like")
-            agent_output: str = dspy.InputField(desc="The agent's actual response")
-            skill_text: str = dspy.InputField(desc="The skill instructions the agent followed")
-            correctness: float = dspy.OutputField(desc="Score 0.0-1.0: correctness")
-            procedure_following: float = dspy.OutputField(desc="Score 0.0-1.0: procedure following")
-            conciseness: float = dspy.OutputField(desc="Score 0.0-1.0: conciseness")
-            feedback: str = dspy.OutputField(desc="Specific, actionable feedback for improvement")
-
         self.config = config
-        self.judge = dspy.ChainOfThought(JudgeSignature)
 
     def score(
         self,
@@ -91,15 +83,30 @@ class LLMJudge:
         artifact_size: Optional[int] = None,
         max_size: Optional[int] = None,
     ) -> FitnessScore:
-        import dspy
-        lm = dspy.LM(self.config.eval_model)
-        with dspy.context(lm=lm):
-            result = self.judge(
-                task_input=task_input,
-                expected_behavior=expected_behavior,
-                agent_output=agent_output,
-                skill_text=skill_text,
+        from openai import OpenAI
+
+        client = OpenAI()
+
+        user_msg = (
+            f"## Task Input\n{task_input}\n\n"
+            f"## Expected Behavior\n{expected_behavior}\n\n"
+            f"## Skill Text\n{skill_text}\n\n"
+            f"## Agent Output\n{agent_output or '(no agent output — evaluate skill text quality only)'}"
+        )
+
+        try:
+            response = client.chat.completions.create(
+                model=self.config.eval_model.removeprefix("openai/"),
+                messages=[
+                    {"role": "system", "content": self.JUDGE_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.1,
             )
+            result = json.loads(response.choices[0].message.content)
+        except Exception as e:
+            return FitnessScore(feedback=f"Judge error: {e}")
 
         length_penalty = 0.0
         if artifact_size and max_size:
@@ -108,38 +115,12 @@ class LLMJudge:
                 length_penalty = min(0.3, (ratio - 0.9) * 3.0)
 
         return FitnessScore(
-            correctness=_parse_score(result.correctness),
-            procedure_following=_parse_score(result.procedure_following),
-            conciseness=_parse_score(result.conciseness),
+            correctness=_parse_score(result.get("correctness", 0.5)),
+            procedure_following=_parse_score(result.get("procedure_following", 0.5)),
+            conciseness=_parse_score(result.get("conciseness", 0.5)),
             length_penalty=length_penalty,
-            feedback=str(result.feedback),
+            feedback=str(result.get("feedback", "")),
         )
-
-
-def skill_fitness_metric(
-    example: dspy.Example,
-    prediction: dspy.Prediction,
-    trace=None,
-) -> float:
-    """DSPy-compatible metric for dspy.GEPA(metric=...).
-
-    Fast heuristic scoring for optimization loop speed.
-    Use LLMJudge for full evaluation on holdout set.
-    """
-    agent_output = getattr(prediction, "output", "") or ""
-    expected = getattr(example, "expected_behavior", "") or ""
-
-    if not agent_output.strip():
-        return 0.0
-
-    # Keyword overlap as fast proxy for correctness (stopwords filtered)
-    expected_words = set(expected.lower().split()) - _STOPWORDS
-    output_words = set(agent_output.lower().split()) - _STOPWORDS
-    if expected_words:
-        overlap = len(expected_words & output_words) / len(expected_words)
-        return min(1.0, 0.3 + (0.7 * overlap))
-
-    return 0.5
 
 
 def _parse_score(value) -> float:

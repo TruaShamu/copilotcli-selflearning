@@ -1,1 +1,1 @@
-"""Skill evolution framework — DSPy + GEPA for Copilot CLI skills."""
+"""Skill evolution framework — GEPA optimize_anything for Copilot CLI skills."""

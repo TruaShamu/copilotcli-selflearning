@@ -1,17 +1,13 @@
-"""Wraps a SKILL.md as a DSPy module for GEPA optimization.
+"""Skill file utilities — find, load, and reassemble SKILL.md files.
 
-The skill body (markdown after frontmatter) is the optimizable parameter.
-GEPA mutates this text, evaluates results, and reflects on failures.
+No DSPy wrapping. GEPA optimize_anything operates on raw skill text directly.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import dspy
+from typing import Optional
 
 from .config import EvolutionConfig
 
@@ -96,50 +92,3 @@ def load_skill(skill_path: Path) -> dict:
 def reassemble_skill(frontmatter: str, evolved_body: str) -> str:
     """Reassemble a skill file from frontmatter + evolved body."""
     return f"---\n{frontmatter}\n---\n\n{evolved_body}\n"
-
-
-class SkillModule:
-    """DSPy module wrapping a skill for GEPA optimization.
-
-    The skill_text is passed as an InputField value on each forward() call,
-    NOT stored as a dspy parameter. This means GEPA optimizes the ChainOfThought
-    reasoning instructions (how the LLM reasons about following the skill), not
-    the skill text itself. Skill text evolution is handled externally by the
-    evolution loop in evolve_skill.py, which mutates skill_text between runs.
-
-    Requires dspy to be installed. Import is deferred to __init__.
-    """
-
-    def __init__(self, skill_text: str):
-        import dspy
-
-        class TaskWithSkill(dspy.Signature):
-            """Complete a task following the provided skill instructions."""
-            skill_instructions: str = dspy.InputField(desc="The skill instructions to follow")
-            task_input: str = dspy.InputField(desc="The task to complete")
-            output: str = dspy.OutputField(desc="Your response following the skill instructions")
-
-        class _Module(dspy.Module):
-            def __init__(self, text):
-                super().__init__()
-                self.skill_text = text
-                self.predictor = dspy.ChainOfThought(TaskWithSkill)
-
-            def forward(self, task_input: str):
-                result = self.predictor(
-                    skill_instructions=self.skill_text,
-                    task_input=task_input,
-                )
-                return dspy.Prediction(output=result.output)
-
-        self._module = _Module(skill_text)
-
-    @property
-    def skill_text(self):
-        return self._module.skill_text
-
-    def __call__(self, **kwargs):
-        return self._module(**kwargs)
-
-    def __getattr__(self, name):
-        return getattr(self._module, name)
