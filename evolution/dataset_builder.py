@@ -50,7 +50,7 @@ class EvalDataset:
     def save(self, path: Path):
         path.mkdir(parents=True, exist_ok=True)
         for name, data in [("train", self.train), ("val", self.val), ("holdout", self.holdout)]:
-            with open(path / f"{name}.jsonl", "w") as f:
+            with open(path / f"{name}.jsonl", "w", encoding="utf-8") as f:
                 for ex in data:
                     f.write(json.dumps(ex.to_dict()) + "\n")
 
@@ -61,7 +61,7 @@ class EvalDataset:
             fpath = path / f"{name}.jsonl"
             if fpath.exists():
                 examples = []
-                with open(fpath) as f:
+                with open(fpath, encoding="utf-8") as f:
                     for line in f:
                         if line.strip():
                             examples.append(EvalExample.from_dict(json.loads(line)))
@@ -261,7 +261,7 @@ class GoldenDatasetLoader:
             raise FileNotFoundError(f"No golden dataset at {golden_file}")
 
         examples = []
-        with open(golden_file) as f:
+        with open(golden_file, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     examples.append(EvalExample.from_dict(json.loads(line)))

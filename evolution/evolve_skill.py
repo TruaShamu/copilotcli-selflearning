@@ -101,7 +101,10 @@ def evolve(
 
     # ── Deferred imports (require API keys) ─────────────────────────────
     import gepa.optimize_anything as oa
-    from gepa.optimize_anything import optimize_anything, GEPAConfig, EngineConfig
+    from gepa.optimize_anything import (
+        optimize_anything, GEPAConfig, EngineConfig, ReflectionConfig,
+    )
+    from .llm_client import is_azure
 
     # ── 3. Build or load evaluation dataset ─────────────────────────────
     console.print(f"\n[bold]Building eval dataset[/bold] (source: {eval_source})")
@@ -167,23 +170,40 @@ def evolve(
     val_data = [{"task_input": ex.task_input, "expected_behavior": ex.expected_behavior} for ex in dataset.val]
 
     # Log dir for resume support
-    log_dir = config.output_dir / skill_name / "gepa_logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = config.output_dir / skill_name / "gepa_logs"
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 5. Run GEPA optimize_anything ───────────────────────────────────
     console.print(f"\n[bold cyan]Running GEPA optimize_anything...[/bold cyan]\n")
     start_time = time.time()
 
+    # GEPA uses litellm internally for the reflection LM.
+    # For Azure-compat endpoints, set litellm's env vars so openai/ prefix works.
+    if is_azure():
+        import os
+        endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
+        if not endpoint.endswith("/v1"):
+            endpoint += "/v1"
+        os.environ.setdefault("OPENAI_API_BASE", endpoint)
+        os.environ.setdefault("OPENAI_API_KEY", os.environ["AZURE_OPENAI_API_KEY"])
+
+    # Resolve reflection model — use the same model as optimizer
+    reflection_model = f"openai/{os.environ['AZURE_OPENAI_MODEL']}" if is_azure() else optimizer_model
+
     gepa_config = GEPAConfig(
         engine=EngineConfig(
             max_metric_calls=max_calls,
-            log_dir=str(log_dir),
+            run_dir=str(run_dir),
+            display_progress_bar=True,
+        ),
+        reflection=ReflectionConfig(
+            reflection_lm=reflection_model,
         ),
     )
 
     # Resume from previous run if requested
-    if resume and (log_dir / "frontier.json").exists():
-        console.print(f"  [bold yellow]Resuming from {log_dir}[/bold yellow]")
+    if resume and any(run_dir.iterdir()):
+        console.print(f"  [bold yellow]Resuming from {run_dir}[/bold yellow]")
 
     result = optimize_anything(
         seed_candidate=skill["body"],
@@ -221,7 +241,7 @@ def evolve(
         console.print("[red]✗ Constraints failed — not deploying[/red]")
         fail_path = config.output_dir / skill_name / "evolved_FAILED.md"
         fail_path.parent.mkdir(parents=True, exist_ok=True)
-        fail_path.write_text(evolved_full)
+        fail_path.write_text(evolved_full, encoding="utf-8")
         console.print(f"  Saved failed variant: {fail_path}")
         return
 
@@ -263,8 +283,8 @@ def evolve(
     out_dir = config.output_dir / skill_name / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    (out_dir / "evolved_skill.md").write_text(evolved_full)
-    (out_dir / "baseline_skill.md").write_text(skill["raw"])
+    (out_dir / "evolved_skill.md").write_text(evolved_full, encoding="utf-8")
+    (out_dir / "baseline_skill.md").write_text(skill["raw"], encoding="utf-8")
     (out_dir / "metrics.json").write_text(json.dumps({
         "skill_name": skill_name,
         "timestamp": timestamp,
@@ -283,7 +303,7 @@ def evolve(
         },
         "elapsed_seconds": elapsed,
         "constraints_passed": all_pass,
-    }, indent=2))
+    }, indent=2), encoding="utf-8")
 
     console.print(f"\n  Output: {out_dir}/")
 
