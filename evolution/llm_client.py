@@ -1,7 +1,10 @@
-"""LLM client factory — supports OpenAI and Azure OpenAI.
+"""LLM client factory — supports OpenAI, Azure OpenAI, and OpenAI-compatible endpoints.
 
 Detects which backend to use from environment variables:
-  - AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY → AzureOpenAI
+  - AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY → Azure OpenAI
+    - If endpoint contains /v1/ or AZURE_OPENAI_COMPAT=1, uses standard
+      OpenAI client with base_url (for OAI-compatible Azure endpoints)
+    - Otherwise uses AzureOpenAI client (for standard deployment-based API)
   - Otherwise → standard OpenAI (uses OPENAI_API_KEY)
 
 Usage:
@@ -24,20 +27,43 @@ def is_azure() -> bool:
     )
 
 
+def _is_compat_mode() -> bool:
+    """Check if the Azure endpoint uses OpenAI-compatible /v1/ routing."""
+    endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+    return (
+        "/v1" in endpoint
+        or os.environ.get("AZURE_OPENAI_COMPAT", "").strip() == "1"
+    )
+
+
 def create_client():
     """Create the appropriate OpenAI client based on environment.
 
-    Returns an AzureOpenAI client if AZURE_OPENAI_ENDPOINT and
-    AZURE_OPENAI_API_KEY are set, otherwise a standard OpenAI client.
+    Three modes:
+    1. Azure + compat (/v1/ in URL): standard OpenAI client with base_url
+    2. Azure standard: AzureOpenAI client (deployment-based routing)
+    3. No Azure env vars: standard OpenAI client (uses OPENAI_API_KEY)
     """
     if is_azure():
-        from openai import AzureOpenAI
+        endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
+        api_key = os.environ["AZURE_OPENAI_API_KEY"]
 
-        return AzureOpenAI(
-            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-            api_key=os.environ["AZURE_OPENAI_API_KEY"],
-            api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-07-18"),
-        )
+        if _is_compat_mode():
+            from openai import OpenAI
+
+            # Ensure base_url ends with /v1 for the OpenAI SDK
+            base_url = endpoint.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = base_url + "/v1" if not base_url.endswith("/openai") else base_url + "/v1"
+            return OpenAI(base_url=base_url, api_key=api_key)
+        else:
+            from openai import AzureOpenAI
+
+            return AzureOpenAI(
+                azure_endpoint=endpoint,
+                api_key=api_key,
+                api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-07-18"),
+            )
     else:
         from openai import OpenAI
 
