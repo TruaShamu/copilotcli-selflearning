@@ -42,7 +42,7 @@ class RunResult:
 @dataclass
 class HarnessConfig:
     """Configuration for the batch runner harness."""
-    timeout: int = 120
+    timeout: int = 180
     max_retries: int = 2
     retry_delay: float = 5.0
     copilot_binary: str = "copilot"
@@ -119,7 +119,7 @@ class CopilotCLIHarness:
                     text=True,
                     timeout=self.config.timeout,
                     encoding="utf-8",
-                    env={**os.environ, "NO_COLOR": "1"},
+                    env={**os.environ, "NO_COLOR": "1", "PYTHONIOENCODING": "utf-8"},
                 )
 
                 elapsed = time.time() - start
@@ -235,7 +235,7 @@ class CopilotCLIHarness:
 
             elif event_type == "tool.execution_complete":
                 name = data.get("toolName", "")
-                if name and name not in tool_calls:
+                if name:
                     tool_calls.append(name)
 
         agent_output = "\n\n".join(assistant_parts)

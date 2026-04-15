@@ -107,9 +107,9 @@ def evolve(
     from gepa.optimize_anything import (
         optimize_anything, GEPAConfig, EngineConfig, ReflectionConfig,
     )
-    from .llm_client import is_azure
+    from .llm_client import is_azure, resolve_model
 
-    # ── 3. Build or load evaluation dataset ─────────────────────────────
+    # ── 3. Build or load evaluation dataset─────────────────────────────
     console.print(f"\n[bold]Building eval dataset[/bold] (source: {eval_source})")
 
     dataset = _build_dataset(eval_source, dataset_path, skill_name, skill, config)
@@ -182,13 +182,19 @@ def evolve(
 
     # GEPA uses litellm internally for the reflection LM.
     # For Azure-compat endpoints, set litellm's env vars so openai/ prefix works.
+    # Set litellm env vars for GEPA's internal reflector.
+    # Scoped to this block — restored after optimize_anything returns.
+    _env_backup = {}
     if is_azure():
         import os
         endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
         if not endpoint.endswith("/v1"):
             endpoint += "/v1"
-        os.environ.setdefault("OPENAI_API_BASE", endpoint)
-        os.environ.setdefault("OPENAI_API_KEY", os.environ["AZURE_OPENAI_API_KEY"])
+        for k, v in [("OPENAI_API_BASE", endpoint),
+                      ("OPENAI_API_KEY", os.environ["AZURE_OPENAI_API_KEY"]),
+                      ("PYTHONIOENCODING", "utf-8")]:
+            _env_backup[k] = os.environ.get(k)
+            os.environ[k] = v
 
     # Resolve reflection model — use the same model as optimizer
     reflection_model = f"openai/{os.environ['AZURE_OPENAI_MODEL']}" if is_azure() else optimizer_model
@@ -225,6 +231,13 @@ def evolve(
         ),
         config=gepa_config,
     )
+
+    # Restore env vars that were temporarily set for GEPA/litellm
+    for k, v in _env_backup.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
     elapsed = time.time() - start_time
     console.print(f"\n  Completed in {elapsed:.1f}s")
@@ -321,6 +334,9 @@ def evolve(
         "max_metric_calls": max_calls,
         "optimizer_model": optimizer_model,
         "eval_model": eval_model,
+        "resolved_optimizer_model": resolve_model(optimizer_model),
+        "resolved_eval_model": resolve_model(eval_model),
+        "azure_deployment": os.environ.get("AZURE_OPENAI_MODEL", ""),
         "baseline_score": avg_base,
         "evolved_score": avg_evolved,
         "improvement": improvement,
