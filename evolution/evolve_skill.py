@@ -55,6 +55,8 @@ def evolve(
     eval_model: str = "openai/gpt-4.1-mini",
     dry_run: bool = False,
     resume: bool = False,
+    harness: bool = False,
+    harness_timeout: int = 120,
 ):
     """Main evolution loop — GEPA optimize_anything on SKILL.md body."""
 
@@ -88,19 +90,26 @@ def evolve(
         console.print(f"  {icon} {c.constraint_name}: {c.message}")
 
     if dry_run:
+        from .llm_client import is_azure
+        backend = "Azure OpenAI" if is_azure() else "OpenAI"
         console.print(f"\n[bold green]DRY RUN — setup OK.[/bold green]")
         console.print(f"  Skill found and loaded: {skill['name']} ({len(skill['raw']):,} chars)")
+        console.print(f"  LLM backend: {backend}")
         console.print(f"  Eval source: {eval_source}")
         console.print(f"  Would run GEPA optimize_anything (max {max_calls} metric calls)")
         console.print(f"  Optimizer model: {optimizer_model}")
         console.print(f"  Eval model: {eval_model}")
+        console.print(f"  Holdout harness: {'Copilot CLI (' + str(harness_timeout) + 's timeout)' if harness else 'LLM-judge only'}")
         return
 
     # ── Deferred imports (require API keys) ─────────────────────────────
     import gepa.optimize_anything as oa
-    from gepa.optimize_anything import optimize_anything, GEPAConfig, EngineConfig
+    from gepa.optimize_anything import (
+        optimize_anything, GEPAConfig, EngineConfig, ReflectionConfig,
+    )
+    from .llm_client import is_azure, resolve_model
 
-    # ── 3. Build or load evaluation dataset ─────────────────────────────
+    # ── 3. Build or load evaluation dataset─────────────────────────────
     console.print(f"\n[bold]Building eval dataset[/bold] (source: {eval_source})")
 
     dataset = _build_dataset(eval_source, dataset_path, skill_name, skill, config)
@@ -164,23 +173,46 @@ def evolve(
     val_data = [{"task_input": ex.task_input, "expected_behavior": ex.expected_behavior} for ex in dataset.val]
 
     # Log dir for resume support
-    log_dir = config.output_dir / skill_name / "gepa_logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = config.output_dir / skill_name / "gepa_logs"
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 5. Run GEPA optimize_anything ───────────────────────────────────
     console.print(f"\n[bold cyan]Running GEPA optimize_anything...[/bold cyan]\n")
     start_time = time.time()
 
+    # GEPA uses litellm internally for the reflection LM.
+    # For Azure-compat endpoints, set litellm's env vars so openai/ prefix works.
+    # Set litellm env vars for GEPA's internal reflector.
+    # Scoped to this block — restored after optimize_anything returns.
+    _env_backup = {}
+    if is_azure():
+        import os
+        endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
+        if not endpoint.endswith("/v1"):
+            endpoint += "/v1"
+        for k, v in [("OPENAI_API_BASE", endpoint),
+                      ("OPENAI_API_KEY", os.environ["AZURE_OPENAI_API_KEY"]),
+                      ("PYTHONIOENCODING", "utf-8")]:
+            _env_backup[k] = os.environ.get(k)
+            os.environ[k] = v
+
+    # Resolve reflection model — use the same model as optimizer
+    reflection_model = f"openai/{os.environ['AZURE_OPENAI_MODEL']}" if is_azure() else optimizer_model
+
     gepa_config = GEPAConfig(
         engine=EngineConfig(
             max_metric_calls=max_calls,
-            log_dir=str(log_dir),
+            run_dir=str(run_dir),
+            display_progress_bar=True,
+        ),
+        reflection=ReflectionConfig(
+            reflection_lm=reflection_model,
         ),
     )
 
     # Resume from previous run if requested
-    if resume and (log_dir / "frontier.json").exists():
-        console.print(f"  [bold yellow]Resuming from {log_dir}[/bold yellow]")
+    if resume and any(run_dir.iterdir()):
+        console.print(f"  [bold yellow]Resuming from {run_dir}[/bold yellow]")
 
     result = optimize_anything(
         seed_candidate=skill["body"],
@@ -200,6 +232,13 @@ def evolve(
         config=gepa_config,
     )
 
+    # Restore env vars that were temporarily set for GEPA/litellm
+    for k, v in _env_backup.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
     elapsed = time.time() - start_time
     console.print(f"\n  Completed in {elapsed:.1f}s")
 
@@ -218,19 +257,46 @@ def evolve(
         console.print("[red]✗ Constraints failed — not deploying[/red]")
         fail_path = config.output_dir / skill_name / "evolved_FAILED.md"
         fail_path.parent.mkdir(parents=True, exist_ok=True)
-        fail_path.write_text(evolved_full)
+        fail_path.write_text(evolved_full, encoding="utf-8")
         console.print(f"  Saved failed variant: {fail_path}")
         return
 
     # ── 7. Evaluate on holdout ──────────────────────────────────────────
-    console.print(f"\n[bold]Holdout evaluation ({len(dataset.holdout)} examples)[/bold]")
+    use_harness = harness
+    harness_runner = None
+    if use_harness:
+        from .harness import CopilotCLIHarness, HarnessConfig
+        harness_runner = CopilotCLIHarness(HarnessConfig(timeout=harness_timeout))
+        console.print(f"\n[bold]Holdout evaluation ({len(dataset.holdout)} examples) [cyan]with Copilot CLI harness[/cyan][/bold]")
+    else:
+        console.print(f"\n[bold]Holdout evaluation ({len(dataset.holdout)} examples)[/bold]")
 
     baseline_scores, evolved_scores = [], []
-    for ex in dataset.holdout:
+    for i, ex in enumerate(dataset.holdout):
+        baseline_output = ""
+        evolved_output = ""
+
+        if harness_runner:
+            console.print(f"  [{i+1}/{len(dataset.holdout)}] Running baseline...")
+            b_run = harness_runner.run(ex.task_input, skill_name, skill["raw"])
+            baseline_output = b_run.agent_output
+            if b_run.error:
+                console.print(f"    [yellow]⚠ Baseline error: {b_run.error}[/yellow]")
+            else:
+                console.print(f"    ✓ {b_run.elapsed_seconds:.1f}s, {len(b_run.tool_calls)} tool calls")
+
+            console.print(f"  [{i+1}/{len(dataset.holdout)}] Running evolved...")
+            e_run = harness_runner.run(ex.task_input, skill_name, evolved_full)
+            evolved_output = e_run.agent_output
+            if e_run.error:
+                console.print(f"    [yellow]⚠ Evolved error: {e_run.error}[/yellow]")
+            else:
+                console.print(f"    ✓ {e_run.elapsed_seconds:.1f}s, {len(e_run.tool_calls)} tool calls")
+
         b_score = judge.score(
             task_input=ex.task_input,
             expected_behavior=ex.expected_behavior,
-            agent_output="",
+            agent_output=baseline_output,
             skill_text=skill["body"],
         )
         baseline_scores.append(b_score.composite)
@@ -238,7 +304,7 @@ def evolve(
         e_score = judge.score(
             task_input=ex.task_input,
             expected_behavior=ex.expected_behavior,
-            agent_output="",
+            agent_output=evolved_output,
             skill_text=evolved_body,
         )
         evolved_scores.append(e_score.composite)
@@ -260,14 +326,17 @@ def evolve(
     out_dir = config.output_dir / skill_name / timestamp
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    (out_dir / "evolved_skill.md").write_text(evolved_full)
-    (out_dir / "baseline_skill.md").write_text(skill["raw"])
+    (out_dir / "evolved_skill.md").write_text(evolved_full, encoding="utf-8")
+    (out_dir / "baseline_skill.md").write_text(skill["raw"], encoding="utf-8")
     (out_dir / "metrics.json").write_text(json.dumps({
         "skill_name": skill_name,
         "timestamp": timestamp,
         "max_metric_calls": max_calls,
         "optimizer_model": optimizer_model,
         "eval_model": eval_model,
+        "resolved_optimizer_model": resolve_model(optimizer_model),
+        "resolved_eval_model": resolve_model(eval_model),
+        "azure_deployment": os.environ.get("AZURE_OPENAI_MODEL", ""),
         "baseline_score": avg_base,
         "evolved_score": avg_evolved,
         "improvement": improvement,
@@ -280,7 +349,8 @@ def evolve(
         },
         "elapsed_seconds": elapsed,
         "constraints_passed": all_pass,
-    }, indent=2))
+        "holdout_harness": use_harness,
+    }, indent=2), encoding="utf-8")
 
     console.print(f"\n  Output: {out_dir}/")
 
@@ -334,7 +404,9 @@ def _build_dataset(
 @click.option("--eval-model", default="openai/gpt-4.1-mini")
 @click.option("--dry-run", is_flag=True, help="Validate setup only")
 @click.option("--resume", is_flag=True, help="Resume from previous run's log_dir")
-def main(skill, max_calls, eval_source, dataset_path, optimizer_model, eval_model, dry_run, resume):
+@click.option("--harness", is_flag=True, help="Use Copilot CLI harness for holdout eval")
+@click.option("--harness-timeout", default=120, help="Timeout per harness run in seconds")
+def main(skill, max_calls, eval_source, dataset_path, optimizer_model, eval_model, dry_run, resume, harness, harness_timeout):
     """Evolve a Copilot CLI skill using GEPA optimize_anything."""
     evolve(
         skill_name=skill,
@@ -345,6 +417,8 @@ def main(skill, max_calls, eval_source, dataset_path, optimizer_model, eval_mode
         eval_model=eval_model,
         dry_run=dry_run,
         resume=resume,
+        harness=harness,
+        harness_timeout=harness_timeout,
     )
 
 

@@ -1,0 +1,2710 @@
+Iteration 0: Base program full valset score: 0.602 over 3 / 3 examples
+Iteration 1: Selected program 0 score: 0.602
+Iteration 1: Exception during reflection/proposal: 'charmap' codec can't encode character '\U0001f4cb' in position 4836: character maps to <undefined>
+Traceback (most recent call last):
+  File "C:\Users\sofiayang\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\gepa\proposer\reflective_mutation\reflective_mutation.py", line 310, in propose
+    self.logger.log(f"Iteration {i}: Proposed new text for {pname}: {text}")
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sofiayang\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\gepa\logging\logger.py", line 69, in log
+    print(*args, **kwargs)
+    ~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\sofiayang\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\gepa\logging\logger.py", line 23, in write
+    f.write(obj)
+    ~~~~~~~^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\U0001f4cb' in position 4836: character maps to <undefined>
+
+Iteration 1: Reflective mutation did not propose a new candidate
+Iteration 2: Selected program 0 score: 0.602
+Iteration 2: Proposed new text for current_candidate: # Self-Learning Skill
+
+A meta-skill for **recall, memory, preference storage, and skill evolution**.
+Use it only for self-learning actions; do not let it interfere with normal task execution.
+
+## Core Rules
+
+- **Explicit user instructions always win.** If the user explicitly requests a tool, package manager, command, file path, or workflow, follow that request even if stored preferences suggest a different default. You may mention the preference briefly, but do not substitute or refuse.
+- **Do not activate heavy learning flows for simple operational tasks.** For straightforward requests (for example: install a package, run one command, answer a question, edit one file), do the task normally. Only run this skill if:
+  - the user explicitly asks to learn/remember/recall/review/improve a skill, or
+  - lifecycle hooks below clearly apply.
+- **Be lightweight by default.** For self-triggered behavior, prefer short recall and minimal storage.
+- **Use only the local memory CLI for persistence.** Do not use any built-in remote memory tool.
+
+## Quick Reference
+
+```bash
+# Preferences
+python ~/.copilot/skills/self-learning/resources/memory_cli.py store-pref <category> "<fact>" --confidence 0.8
+python ~/.copilot/skills/self-learning/resources/memory_cli.py query-prefs [--category <cat>]
+python ~/.copilot/skills/self-learning/resources/memory_cli.py supersede-pref <old_id> "<new_fact>"
+
+# Memory
+python ~/.copilot/skills/self-learning/resources/memory_cli.py store-memory <subject> "<fact>" --repo "owner/repo"
+python ~/.copilot/skills/self-learning/resources/memory_cli.py query-memory [--subject <sub>] [--search <text>]
+
+# Skill tracking
+python ~/.copilot/skills/self-learning/resources/memory_cli.py log-skill <name> <success|partial|failure|skipped> --friction "..."
+python ~/.copilot/skills/self-learning/resources/memory_cli.py query-skills [--name <name>]
+
+# Learning log
+python ~/.copilot/skills/self-learning/resources/memory_cli.py log-learning "<intent>" "<phases>" <tool_count> --candidate
+python ~/.copilot/skills/self-learning/resources/memory_cli.py query-learnings [--candidates-only]
+
+# Sessions & search
+python ~/.copilot/skills/self-learning/resources/memory_cli.py search-sessions "<query>" --context 3 --limit 30
+python ~/.copilot/skills/self-learning/resources/memory_cli.py recent-sessions --limit 10
+
+# Tool sequences
+python ~/.copilot/skills/self-learning/resources/memory_cli.py log-tool <session_id> <tool_name> [--failed]
+python ~/.copilot/skills/self-learning/resources/memory_cli.py query-tool-sequences [--patterns --window-size 3]
+
+# Stats
+python ~/.copilot/skills/self-learning/resources/memory_cli.py stats
+```
+
+## When to Use This Skill
+
+Activate this skill when the user:
+
+- says "learn", "reflect", "review session", or "what did you learn"
+- says "remember this", "save this for later", or "store a preference"
+- says "what do you remember", "recall", or "search past sessions"
+- says "create a skill from this session" or "save this as a skill"
+- says "improve skill X" or "that skill didn't work well"
+
+Also use the lifecycle hooks below when they apply.
+
+## Fast Paths For Explicit Requests
+
+### If the user directly asks to store a preference
+Store it immediately; do not run the full review flow first.
+
+Preferred categories:
+- `package-manager` — npm/pnpm/yarn/bun preferences
+- `workflow` — planning/review habits
+- `code-style` — formatting/types/style conventions
+- `testing` — test framework or coverage preferences
+- `tools` — preferred utilities/editors/CLIs
+- `review-style` — PR/review expectations
+
+Example:
+```bash
+python ~/.copilot/skills/self-learning/resources/memory_cli.py store-pref "package-manager" "Always use pnpm instead of npm" --confidence 0.9
+```
+
+Then reply briefly:
+> "Stored your preference: use pnpm instead of npm."
+
+### If the user directly asks to remember/store a fact
+Store it immediately with `store-memory`, then acknowledge briefly.
+
+Example:
+```bash
+python ~/.copilot/skills/self-learning/resources/memory_cli.py store-memory "build" "Use npm run build:prod for production builds" --repo "owner/repo"
+```
+
+### If the user directly asks to recall/search memory
+Run recall first and answer the recall request directly; do not force a full post-task review.
+
+---
+
+## Lifecycle Hooks
+
+## Session Start (proactive, silent)
+
+Run this at the beginning of a session before the first substantive task.
+
+1. **Load preferences** — handled automatically by the `sessionStart` hook. Do not repeat it manually.
+2. **Check prior art** — if the first user message contains a clear topic, feature, file, framework, or problem, run **1-3 search variants**:
+   - one broad topic term
+   - one specific framework/feature term
+   - one synonym/short form if useful
+
+   Examples:
+   - `authentication`
+   - `Express.js auth`
+   - `login middleware`
+
+   Rules:
+   - Do **not** ask follow-up questions before doing this.
+   - Do **not** wait for confirmation.
+   - Prefer the most specific feature/framework terms.
+   - If results are noisy, keep only the top 1-2 clearly relevant matches.
+
+   Example:
+   ```bash
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py search-sessions "Express.js auth" --context 3 --limit 5
+   ```
+
+3. **Load relevant memory** — query memory using **variant queries** too:
+   - `--subject` when there is a clear stable subject
+   - `--search` for free-text variants
+
+   Example:
+   ```bash
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py query-memory --search "authentication"
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py query-memory --search "Express.js auth"
+   ```
+
+4. **Mention only if useful** — if recall found something relevant, mention it briefly in the first response:
+   > "I found a related past session where you implemented Express auth middleware and debugged token handling."
+
+Do not mention recall if nothing relevant was found.
+
+## Post-Task (autonomous, single pass)
+
+Run this once after a **substantial** task only:
+- 3+ tool calls, or
+- multi-phase work, or
+- meaningful implementation + validation
+
+Do **not** run it for:
+- simple Q&A
+- one-command operational requests
+- trivial edits
+- sessions where the user asked you not to learn
+- if you already ran it this session
+
+Steps:
+
+1. **Memory nudge** — silently store 1-3 genuinely useful facts.
+2. **Preference observation** — silently store clear user preferences/conventions.
+3. **Skill creation check** — ask only if the session produced a reusable multi-step workflow.
+4. **Skill improvement check** — ask only if a skill was used and clear friction occurred.
+
+Keep this a single autonomous pass.
+
+---
+
+## Explicit Invocation Flow
+
+If the user explicitly asks to review/learn/reflect, run in this order:
+
+1. Cross-session recall
+2. Memory nudge
+3. Preference observation
+4. Skill creation check
+5. Skill improvement check
+
+End with a short summary:
+> "Session review complete:
+> - Stored 2 facts
+> - Found 1 related past session
+> - No skill creation candidate
+> - No skill improvements needed"
+
+---
+
+## Capability 1 — Skill Auto-Creation
+
+**Goal:** turn a reusable multi-step session into a new SKILL.md.
+
+### Trigger
+
+Use when:
+- the user explicitly asks to create/save a skill, or
+- the session had 5+ tool calls across 3+ distinct phases and looks reusable
+
+Skip if it was clearly one-off.
+
+### Procedure
+
+1. **Analyze the session**
+   Extract:
+   - user intent
+   - ordered workflow
+   - decision points
+   - final outcome
+
+2. **Identify the reusable pattern**
+   Ask:
+   - what varies between runs?
+   - what stays constant?
+   - is this repeatable outside this exact task?
+
+3. **Draft the skill**
+   Use this template:
+
+   ```markdown
+   ---
+   name: <kebab-case-name>
+   description: <one-line description with 3+ trigger phrases>
+   ---
+
+   # <Skill Name>
+
+   <Brief purpose and when to use it.>
+
+   ## When to Use This Skill
+   <Trigger conditions>
+
+   ## Procedure
+   <Concrete numbered steps>
+
+   ## Parameters
+   <What varies>
+
+   ## Learned From
+   - Session: <session_id>
+   - Date: <date>
+   - Original request: "<original ask>"
+   ```
+
+4. **Propose**
+   Ask:
+   > "This looks like a reusable workflow. Save it as a skill?"
+
+   Use `ask_user` with choices: `["Save skill", "Edit first", "Skip"]`.
+
+5. **Save**
+   Save to the user-level directory:
+   ```bash
+   mkdir -p ~/.copilot/skills/<name>
+   ```
+   Write:
+   `~/.copilot/skills/<name>/SKILL.md`
+
+### Quality Gates
+
+- self-contained; no references like "in this session"
+- at least 3 concrete procedural steps
+- description includes diverse trigger phrases
+- concise and actionable
+
+---
+
+## Capability 2 — Skill Self-Improvement
+
+**Goal:** revise an existing skill after observing friction.
+
+### Trigger
+
+Use when:
+- user says "improve skill X"
+- user says a skill did not work well
+- a skill was used and you observed meaningful friction
+
+### Procedure
+
+1. **Find the skill**
+   ```bash
+   glob .github/skills/**/SKILL.md
+   glob ~/.copilot/skills/**/SKILL.md
+   ```
+
+2. **Compare expected vs actual execution**
+   Look for:
+   - skipped steps
+   - missing steps
+   - wrong order
+   - missing tools
+   - outdated references
+
+3. **Draft a revision summary**
+   Format:
+   ```markdown
+   ## Proposed Skill Improvements
+
+   ### Added
+   - ...
+
+   ### Modified
+   - ...
+
+   ### Removed
+   - ...
+   ```
+
+4. **Propose**
+   Use `ask_user` with choices: `["Apply all", "Let me review", "Skip"]`.
+
+5. **Apply**
+   Edit the skill in place and append:
+
+   ```markdown
+   ## Revision History
+   - <date>: <brief description> (from session <id>)
+   ```
+
+### Heuristics
+
+- if a skill has worked repeatedly without friction, leave it alone
+- user corrections are strong evidence
+- do not remove safety/validation steps without explicit approval
+
+---
+
+## Capability 3 — Memory Nudges
+
+**Goal:** persist useful durable facts for future sessions.
+
+### Trigger
+
+- end of a substantial task
+- user says "remember this" or "save this"
+- you discover a durable convention/gotcha/verified command
+
+### Procedure
+
+1. **Find candidate facts**
+   Good candidates:
+   - verified commands
+   - conventions
+   - stable architecture facts
+   - important gotchas
+   - repo-specific distinctions
+   - user-stated choices that are useful later
+
+2. **Filter**
+   Store only facts that are:
+   - actionable later
+   - independent of the current diff
+   - reasonably stable
+   - not obvious from a quick code read
+   - not secret/sensitive
+
+3. **Avoid duplicates**
+   Be conservative; if the fact appears already known, skip it.
+
+4. **Store**
+   ```bash
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py store-memory "<subject>" "<fact>" --repo "<owner/repo>"
+   ```
+
+5. **Acknowledge briefly**
+   Example:
+   > "Stored 2 facts: verified build command and config-file distinction."
+
+### Conservative Defaults
+
+- maximum 3 facts per session
+- prefer broadly reusable facts
+- only store after verified results when self-triggered
+
+---
+
+## Capability 4 — Cross-Session Recall
+
+**Goal:** find relevant past work and summarize it briefly.
+
+### Trigger
+
+- user asks what you remember / whether they have done this before
+- session-start prior-art check
+- explicit "search past sessions" request
+
+### Procedure
+
+1. **Search using 1-3 query variants**
+   Use:
+   - broad topic
+   - specific framework/feature
+   - synonym/abbreviation if helpful
+
+2. **Run search**
+   ```bash
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py search-sessions "<query>" --context 3 --limit 30
+   ```
+
+3. **Handle noisy results**
+   - prefer specific matches over broad ones
+   - summarize only top 1-2 relevant matches
+   - ignore weak/noisy hits
+
+4. **Summarize**
+   If helpful, use an `explore` subagent for concise summarization focused on:
+   - what was asked
+   - what was done
+   - key decisions
+   - outcomes
+   - specific commands/paths/errors
+
+5. **Present briefly**
+   Example:
+   > "I found 2 relevant past sessions: one on CI auth config and one on Express token middleware."
+
+6. **Recent work**
+   For "what did I work on recently":
+   ```bash
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py recent-sessions --limit 10
+   ```
+
+### Notes
+
+- session transcripts already exist in `~/.copilot/session-store.db`
+- no manual ingestion needed
+
+---
+
+## Capability 5 — User Preference Model
+
+**Goal:** maintain a local model of the user's durable preferences.
+
+### Scope
+
+All memory is local in `~/.copilot/self-learning/memory.db`.
+The built-in remote memory tool is blocked by hooks; use `memory_cli.py` only.
+
+### What to Track
+
+Examples:
+- code style conventions
+- workflow preferences
+- package manager preferences
+- test framework preferences
+- review/PR expectations
+- repeated user corrections
+
+### Procedure
+
+1. **Observe clear signals**
+   Store preferences when the user:
+   - explicitly states them
+   - corrects your default behavior
+   - repeatedly chooses the same approach
+
+2. **Store**
+   Canonical command:
+   ```bash
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py store-pref "<category>" "<fact>" --confidence 0.8
+   ```
+
+   Use `0.9` for explicit statements such as:
+   - "always use pnpm"
+   - "show a plan first"
+   - "use Vitest in this repo"
+
+3. **Supersede when needed**
+   If a newer preference contradicts an older one:
+   ```bash
+   python ~/.copilot/skills/self-learning/resources/memory_cli.py supersede-pref <old_id> "<new_fact>"
+   ```
+
+4. **Session-start loading**
+   Already handled by hook; do not duplicate.
+
+### Guardrails
+
+- never store secrets, tokens, or credentials
+- explicit user instructions override stored preferences
+- store durable preferences, not one-off choices
+
+---
+
+## Revision History
+
+- 2026-04-11: Initial prototype
+- 2026-04-14: Added hooks and lifecycle guidance
+- 2026-04-15: Tightened scope, added explicit-override rule, added fast paths for direct memory/preference requests, clarified session-start multi-query recall, standardized command examples
+Iteration 2: New subsample score 2.706 is better than old score 1.6760000000000002. Continue to full eval and add to candidate pool.
+Iteration 2: Found a better program on the valset with score 0.6943333333333334.
+Iteration 2: Valset score for new program: 0.6943333333333334 (coverage 3 / 3)
+Iteration 2: Val aggregate for new program: 0.6943333333333334
+Iteration 2: Individual valset scores for new program: {0: 0.545, 1: 0.818, 2: 0.72}
+Iteration 2: New valset pareto front scores: {0: 0.545, 1: 0.818, 2: 0.7959999999999999}
+Iteration 2: Valset pareto front aggregate score: 0.7196666666666666
+Iteration 2: Updated valset pareto front programs: {0: {1}, 1: {1}, 2: {0}}
+Iteration 2: Best valset aggregate score so far: 0.6943333333333334
+Iteration 2: Best program as per aggregate score on valset: 1
+Iteration 2: Best score on valset: 0.6943333333333334
+Iteration 2: Linear pareto front program index: 1
+Iteration 2: New program candidate index: 1
+Iteration 3: Selected program 1 score: 0.6943333333333334
+Iteration 3: Proposed new text for current_candidate: ---
+name: self-learning
+description: Recall past work, store durable memory, save user preferences, and evolve reusable skills.
+---
+
+# Self-Learning Skill
+
+Use this skill only for self-learning actions:
+- recall past work
+- remember durable facts
+- store user preferences
+- create or improve skills
+
+Do **not** let it interfere with normal task execution.
+
+## Core Rules
+
+- **Explicit user instructions always win.** If the user explicitly asks for a tool, package manager, command, file path, or workflow, follow that request even if stored preferences differ.
+- **Be lightweight by default.** Do not run heavy review flows for simple tasks.
+- **Use only the local memory CLI for persistence.** Do not use built-in remote memory tools or any other backend such as `session_store_sql`.
+- **For direct recall questions, use memory first.** Only fall back to session search if memory is empty, weak, or inconclusive.
+- **If the user asked not to learn, do not store or review anything.**
+- **Do not store secrets, tokens, credentials, or sensitive data.**
+
+## Canonical CLI
+
+Prefer running from the skill resource directory so commands stay short:
+
+```bash
+cd ~/.copilot/skills/self-learning/resources
+```
+
+Then use:
+
+```bash
+python memory_cli.py store-pref <category> "<fact>" --confidence 0.8
+python memory_cli.py query-prefs [--category <cat>]
+python memory_cli.py supersede-pref <old_id> "<new_fact>"
+
+python memory_cli.py store-memory <subject> "<fact>" --repo "owner/repo"
+python memory_cli.py query-memory [--subject <sub>] [--search <text>]
+
+python memory_cli.py log-skill <name> <success|partial|failure|skipped> --friction "..."
+python memory_cli.py query-skills [--name <name>]
+
+python memory_cli.py log-learning "<intent>" "<phases>" <tool_count> --candidate
+python memory_cli.py query-learnings [--candidates-only]
+
+python memory_cli.py search-sessions "<query>" --context 3 --limit 5
+python memory_cli.py recent-sessions --limit 10
+python memory_cli.py log-tool <session_id> <tool_name> [--failed]
+python memory_cli.py query-tool-sequences [--patterns --window-size 3]
+python memory_cli.py stats
+```
+
+If you cannot `cd` first, use the full path:
+```bash
+python ~/.copilot/skills/self-learning/resources/memory_cli.py ...
+```
+
+## When to Use This Skill
+
+Activate this skill when the user:
+- says "remember this", "save this", or "store a preference"
+- says "what do you remember", "recall", "search past sessions", or asks a past-work question
+- says "learn", "reflect", "review session", or "what did you learn"
+- says "create a skill from this session" or "save this as a skill"
+- says "improve skill X" or says a skill did not work well
+
+Also use the lifecycle hooks below when they apply.
+
+## Fast Decision Table
+
+| User intent | What to do |
+|---|---|
+| Store a preference | `store-pref` immediately |
+| Remember a fact | `store-memory` immediately |
+| Recall past work / ask what was chosen before | `query-memory` first, then `search-sessions` only if needed |
+| Review / reflect | run explicit review flow |
+| Create or improve a skill | run the matching capability flow |
+
+---
+
+## Direct Recall Flow
+
+Use this for explicit recall questions such as:
+- "Do you remember what database we chose for the analytics service?"
+- "What did we decide for auth?"
+- "Have we done this before?"
+
+### Required order
+
+1. **Query memory first** with a targeted search.
+2. If memory is **empty, weak, or inconclusive**, fall back to `search-sessions`.
+3. Summarize:
+   - what was found
+   - where it came from
+   - uncertainty if results are incomplete
+
+### How to form the query
+
+Use 1-3 short variants:
+- core subject: `analytics`
+- decision phrase: `database analytics`
+- fuller phrase: `database analytics service`
+
+### Commands
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py query-memory --search "database analytics"
+python memory_cli.py query-memory --search "analytics service"
+python memory_cli.py query-memory --search "analytics database"
+```
+
+If memory is insufficient:
+```bash
+python memory_cli.py search-sessions "database analytics service" --context 3 --limit 5
+```
+
+### When memory is insufficient
+
+Treat memory as insufficient if:
+- no matches are returned
+- matches are about the wrong subject
+- results mention the topic but not the decision
+- multiple matches conflict and none is clearly strongest
+
+### Response template
+
+If found in memory:
+> "I found a stored memory that the analytics service uses <choice>."
+
+If found only in session search:
+> "I didn’t find a direct stored memory, but I found a past session indicating the analytics service used <choice>."
+
+If uncertain:
+> "I found related history, but I couldn’t confirm the final choice."
+
+### Architecture-choice example
+
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py query-memory --search "database analytics"
+python memory_cli.py query-memory --search "analytics service"
+python memory_cli.py search-sessions "database analytics service" --context 3 --limit 5
+```
+
+---
+
+## Fast Paths For Explicit Requests
+
+### Store a preference
+
+Store it immediately. Do not run a full review first.
+
+Preferred categories:
+- `package-manager`
+- `workflow`
+- `code-style`
+- `testing`
+- `tools`
+- `review-style`
+
+Use normalized fact phrasing when possible.
+
+Canonical package-manager example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py store-pref package-manager "prefers pnpm over npm" --confidence 0.9
+```
+
+Then reply briefly:
+> "Stored your preference: prefers pnpm over npm."
+
+### Store a fact
+
+Store it immediately with `store-memory`, then acknowledge briefly.
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py store-memory build "Use npm run build:prod for production builds" --repo "owner/repo"
+```
+
+### Recall/search memory
+
+Run the **Direct Recall Flow** above. Do not force a post-task review.
+
+---
+
+## Lifecycle Hooks
+
+## Session Start (silent)
+
+Run at the beginning of a session before the first substantive task.
+
+1. **Load preferences** — handled automatically by the `sessionStart` hook. Do not repeat manually.
+2. **Check prior art** — if the first user message has a clear topic, run **1-3 targeted searches**:
+   - first query memory
+   - if needed, then search sessions
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py query-memory --search "authentication"
+python memory_cli.py query-memory --search "Express.js auth"
+python memory_cli.py search-sessions "Express.js auth" --context 3 --limit 5
+```
+
+3. **Mention only if useful** — briefly mention only clearly relevant prior work.
+
+Example:
+> "I found a related past session where you implemented Express auth middleware and debugged token handling."
+
+## Post-Task (autonomous, single pass)
+
+Run this once after a **substantial** task only:
+- 3+ tool calls, or
+- multi-phase work, or
+- meaningful implementation plus validation
+
+Do **not** run it for:
+- simple Q&A
+- one-command requests
+- trivial edits
+- sessions where the user asked you not to learn
+- if already run this session
+
+Steps:
+1. **Memory nudge** — silently store 1-3 durable facts.
+2. **Preference observation** — silently store clear durable preferences.
+3. **Skill creation check** — ask only if the workflow is reusable.
+4. **Skill improvement check** — ask only if a skill was used and friction occurred.
+
+---
+
+## Explicit Review Flow
+
+If the user explicitly asks to review, learn, or reflect, run in this order:
+
+1. Cross-session recall
+2. Memory nudge
+3. Preference observation
+4. Skill creation check
+5. Skill improvement check
+
+End with a short summary:
+> "Session review complete:
+> - Stored 2 facts
+> - Found 1 related past session
+> - No skill creation candidate
+> - No skill improvements needed"
+
+---
+
+## Capability 1 — Skill Auto-Creation
+
+### Trigger
+
+Use when:
+- the user explicitly asks to create or save a skill, or
+- the session had 5+ tool calls across 3+ distinct phases and looks reusable
+
+Skip if clearly one-off.
+
+### Procedure
+
+1. Extract:
+   - user intent
+   - ordered workflow
+   - decision points
+   - final outcome
+2. Identify what varies and what stays constant.
+3. Draft the skill:
+
+```markdown
+---
+name: <kebab-case-name>
+description: <one-line description with 3+ trigger phrases>
+---
+
+# <Skill Name>
+
+<Brief purpose and when to use it.>
+
+## When to Use This Skill
+<Trigger conditions>
+
+## Procedure
+<Concrete numbered steps>
+
+## Parameters
+<What varies>
+
+## Learned From
+- Session: <session_id>
+- Date: <date>
+- Original request: "<original ask>"
+```
+
+4. Ask:
+   > "This looks like a reusable workflow. Save it as a skill?"
+
+   Use `ask_user` with choices: `["Save skill", "Edit first", "Skip"]`.
+
+5. Save:
+```bash
+mkdir -p ~/.copilot/skills/<name>
+```
+Write:
+`~/.copilot/skills/<name>/SKILL.md`
+
+### Quality Gates
+
+- self-contained
+- at least 3 concrete steps
+- concise and actionable
+- no references like "in this session"
+
+---
+
+## Capability 2 — Skill Self-Improvement
+
+### Trigger
+
+Use when:
+- user says "improve skill X"
+- user says a skill did not work well
+- a skill was used and meaningful friction occurred
+
+### Procedure
+
+1. Find the skill:
+   ```bash
+   glob .github/skills/**/SKILL.md
+   glob ~/.copilot/skills/**/SKILL.md
+   ```
+2. Compare expected vs actual execution.
+3. Draft:
+
+```markdown
+## Proposed Skill Improvements
+
+### Added
+- ...
+
+### Modified
+- ...
+
+### Removed
+- ...
+```
+
+4. Ask with `ask_user`: `["Apply all", "Let me review", "Skip"]`
+5. If approved, edit in place and append:
+
+```markdown
+## Revision History
+- <date>: <brief description> (from session <id>)
+```
+
+### Heuristics
+
+- repeated success without friction is evidence to leave it alone
+- user corrections are strong evidence
+- do not remove safety or validation steps without explicit approval
+
+---
+
+## Capability 3 — Memory Nudges
+
+### Trigger
+
+- end of a substantial task
+- user says "remember this" or "save this"
+- you discover a durable convention, gotcha, or verified command
+
+### Procedure
+
+1. Pick good candidates:
+   - verified commands
+   - conventions
+   - stable architecture facts
+   - important gotchas
+   - repo-specific distinctions
+   - useful user-stated choices
+2. Filter: store only facts that are actionable, stable, non-sensitive, and not obvious from a quick code read.
+3. Avoid duplicates conservatively.
+4. Store:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-memory "<subject>" "<fact>" --repo "<owner/repo>"
+   ```
+5. If user-visible, acknowledge briefly.
+
+### Defaults
+
+- max 3 facts per session
+- prefer broadly reusable facts
+- when self-triggered, store only after verification
+
+---
+
+## Capability 4 — Cross-Session Recall
+
+### Trigger
+
+- explicit recall question
+- session-start prior-art check
+- "what did I work on recently"
+
+### Procedure
+
+1. **Memory first**
+   - use `query-memory --subject` if there is a stable subject
+   - otherwise use `query-memory --search` with 1-3 focused variants
+2. **Session search second**
+   - only if memory is insufficient
+   - use `search-sessions "<query>" --context 3 --limit 5`
+3. Summarize only the top 1-2 relevant findings.
+4. Say clearly whether the answer came from stored memory or past session history.
+
+### Recent work
+
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py recent-sessions --limit 10
+```
+
+### Notes
+
+- session transcripts already exist in `~/.copilot/session-store.db`
+- do not query other backends directly
+- do not use `session_store_sql`
+
+---
+
+## Capability 5 — User Preference Model
+
+### Scope
+
+All memory is local in `~/.copilot/self-learning/memory.db`.
+Use `memory_cli.py` only.
+
+### What to Track
+
+- code style conventions
+- workflow preferences
+- package manager preferences
+- test framework preferences
+- review expectations
+- repeated user corrections
+
+### Procedure
+
+1. Store preferences when the user:
+   - explicitly states them
+   - corrects your default behavior
+   - repeatedly chooses the same approach
+2. Canonical command:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-pref "<category>" "<fact>" --confidence 0.8
+   ```
+3. Use `0.9` for explicit durable statements like:
+   - "always use pnpm"
+   - "show a plan first"
+   - "use Vitest in this repo"
+4. If a new preference contradicts an old one:
+   ```bash
+   python memory_cli.py supersede-pref <old_id> "<new_fact>"
+   ```
+
+### Guardrails
+
+- never store secrets
+- explicit user instructions override stored preferences
+- store durable preferences, not one-off choices
+
+## Revision History
+
+- 2026-04-11: Initial prototype
+- 2026-04-14: Added hooks and lifecycle guidance
+- 2026-04-15: Tightened scope and standardized commands
+- 2026-04-15: Added explicit memory-first recall flow, fallback rules, canonical short CLI usage, and backend restrictions
+Iteration 3: New subsample score 2.782 is better than old score 1.8960000000000001. Continue to full eval and add to candidate pool.
+Iteration 3: Found a better program on the valset with score 0.7203333333333332.
+Iteration 3: Valset score for new program: 0.7203333333333332 (coverage 3 / 3)
+Iteration 3: Val aggregate for new program: 0.7203333333333332
+Iteration 3: Individual valset scores for new program: {0: 0.5569999999999999, 1: 0.8119999999999999, 2: 0.7919999999999999}
+Iteration 3: New valset pareto front scores: {0: 0.5569999999999999, 1: 0.818, 2: 0.7959999999999999}
+Iteration 3: Valset pareto front aggregate score: 0.7236666666666666
+Iteration 3: Updated valset pareto front programs: {0: {2}, 1: {1}, 2: {0}}
+Iteration 3: Best valset aggregate score so far: 0.7203333333333332
+Iteration 3: Best program as per aggregate score on valset: 2
+Iteration 3: Best score on valset: 0.7203333333333332
+Iteration 3: Linear pareto front program index: 2
+Iteration 3: New program candidate index: 2
+Iteration 4: Selected program 1 score: 0.6943333333333334
+Iteration 4: Exception during reflection/proposal: 'charmap' codec can't encode character '\u2192' in position 4207: character maps to <undefined>
+Traceback (most recent call last):
+  File "C:\Users\sofiayang\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\gepa\proposer\reflective_mutation\reflective_mutation.py", line 310, in propose
+    self.logger.log(f"Iteration {i}: Proposed new text for {pname}: {text}")
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\sofiayang\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\gepa\logging\logger.py", line 69, in log
+    print(*args, **kwargs)
+    ~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\sofiayang\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0\LocalCache\local-packages\Python313\site-packages\gepa\logging\logger.py", line 23, in write
+    f.write(obj)
+    ~~~~~~~^^^^^
+  File "C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.13_3.13.3568.0_x64__qbz5n2kfra8p0\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2192' in position 4207: character maps to <undefined>
+
+Iteration 4: Reflective mutation did not propose a new candidate
+Iteration 5: Selected program 2 score: 0.7203333333333332
+Iteration 5: Proposed new text for current_candidate: ---
+name: self-learning
+description: Recall past work, store durable memory, save user preferences, and create or improve reusable skills.
+---
+
+# Self-Learning Skill
+
+Use this skill only for:
+- recalling past work
+- storing durable facts
+- storing user preferences
+- reviewing/learning from a session
+- creating or improving skills
+
+Do **not** let it interfere with normal task execution.
+
+## Core Rules
+
+- **Explicit user instructions always win.**
+- **Use only the local memory CLI for persistence.** Do not use remote memory tools or any other backend such as `session_store_sql`.
+- **Do not store secrets, tokens, credentials, or sensitive data.**
+- **If the user asked not to learn, do not store, review, or search.**
+- **Be lightweight by default.**
+- **Memory-first recall:** query memory first; search sessions only if memory is empty, weak, or inconclusive.
+- **False-positive guardrails override autonomous hooks.** If a case matches **Do NOT self-trigger**, skip all autonomous self-learning except passive preference loading already handled elsewhere.
+
+## Canonical CLI
+
+Prefer running from the skill resource directory:
+
+```bash
+cd ~/.copilot/skills/self-learning/resources
+```
+
+Then use:
+
+```bash
+python memory_cli.py store-pref <category> "<fact>" --confidence 0.8
+python memory_cli.py query-prefs [--category <cat>]
+python memory_cli.py supersede-pref <old_id> "<new_fact>"
+
+python memory_cli.py store-memory <subject> "<fact>" --repo "owner/repo"
+python memory_cli.py query-memory [--subject <sub>] [--search <text>]
+
+python memory_cli.py log-skill <name> <success|partial|failure|skipped> --friction "..."
+python memory_cli.py query-skills [--name <name>]
+
+python memory_cli.py log-learning "<intent>" "<phases>" <tool_count> --candidate
+python memory_cli.py query-learnings [--candidates-only]
+
+python memory_cli.py search-sessions "<query>" --context 3 --limit 5
+python memory_cli.py recent-sessions --limit 10
+python memory_cli.py log-tool <session_id> <tool_name> [--failed]
+python memory_cli.py query-tool-sequences [--patterns --window-size 3]
+python memory_cli.py stats
+```
+
+If you cannot `cd` first, use:
+
+```bash
+python ~/.copilot/skills/self-learning/resources/memory_cli.py ...
+```
+
+## Quick Decision Rules
+
+| Situation | Action |
+|---|---|
+| User says "remember this", "save this", "store a preference" | store immediately |
+| User asks "what do you remember", "have we done this before", or asks about a past decision | run recall flow |
+| User says **"Learn from this session"**, "review this session", "reflect", or similar | **always run the full explicit review flow**, even if the session was lightweight or sparse |
+| User says "create/save a skill from this" | run skill creation flow |
+| User says "improve skill X" or "this skill told me X but I prefer Y" | run skill improvement flow + store durable preference if applicable |
+| Simple Q&A, syntax help, factual question, one-off troubleshooting, trivial edit | do **not** self-trigger |
+
+## Do NOT Self-Trigger When
+
+Do not autonomously activate this skill for:
+- simple informational Q&A
+- syntax questions like “how do I do X in Python?”
+- factual/reference questions
+- one-off troubleshooting with no durable outcome
+- single-turn or single-tool-call sessions
+- trivial edits
+- Q&A-only sessions with no implementation/review request
+
+Examples:
+- “What does `dict.get` do in Python?”
+- “What’s the SQL syntax for LEFT JOIN?”
+- “Why is this regex not matching?”
+- “Rename this variable.”
+
+In these cases, do nothing beyond normal task execution.
+
+## When to Use This Skill
+
+Activate this skill when the user explicitly:
+- asks to remember, save, or store something
+- asks to recall past work or decisions
+- asks to learn, review, or reflect on the session
+- asks to create/save a skill
+- asks to improve a skill or reports skill friction
+
+Autonomous use is limited to the lifecycle hooks below and must still obey **Do NOT Self-Trigger When**.
+
+---
+
+## Canonical Recall Flow
+
+Use for direct recall questions and prior-art checks.
+
+### Required order
+
+1. Query memory first with 1-3 focused queries.
+2. If memory is empty, weak, or inconclusive, search sessions.
+3. Report:
+   - what was found
+   - whether it came from stored memory or session history
+   - uncertainty if not confirmed
+
+### Query formation
+
+Use short variants such as:
+- core subject
+- subject + decision
+- fuller phrase
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py query-memory --search "database analytics"
+python memory_cli.py query-memory --search "analytics service"
+python memory_cli.py query-memory --search "analytics database"
+```
+
+Fallback:
+```bash
+python memory_cli.py search-sessions "database analytics service" --context 3 --limit 5
+```
+
+### Insufficient memory means
+
+- no matches
+- wrong subject
+- topic mentioned but no decision captured
+- conflicting matches with no clear strongest result
+
+### Response patterns
+
+If found in memory:
+> "I found a stored memory that the analytics service uses <choice>."
+
+If found only in session search:
+> "I didn’t find a direct stored memory, but I found a past session indicating the analytics service used <choice>."
+
+If uncertain:
+> "I found related history, but I couldn’t confirm the final choice."
+
+---
+
+## Fast Paths
+
+### Store a preference
+
+Store immediately. Do not run a full review first.
+
+Preferred categories:
+- `package-manager`
+- `workflow`
+- `code-style`
+- `testing`
+- `tools`
+- `review-style`
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py store-pref package-manager "prefers pnpm over npm" --confidence 0.9
+```
+
+Reply briefly:
+> "Stored your preference: prefers pnpm over npm."
+
+### Store a fact
+
+Store immediately, then acknowledge briefly.
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py store-memory build "Use npm run build:prod for production builds" --repo "owner/repo"
+```
+
+### Improve a skill based on user preference
+
+If the user says something like:
+- “Improve skill X”
+- “This skill told me to do X, but I prefer Y”
+- “That skill should ask before changing files”
+
+Then:
+1. load the named skill
+2. identify the exact friction point
+3. propose the **smallest possible wording change**
+4. preserve the rest of the skill
+5. ask before applying
+6. if the complaint expresses a durable preference, store it with `store-pref`
+
+Do not broadly rewrite the skill unless the user asks.
+
+---
+
+## Lifecycle Hooks
+
+## Session Start (silent)
+
+Run only if all are true:
+- this is **not** a case from **Do NOT Self-Trigger When**
+- the first user message has a clear implementation topic
+- prior art could materially help
+
+Steps:
+1. Preferences are already handled by the `sessionStart` hook; do not reload manually.
+2. If useful, run 1-3 targeted recall queries using the **Canonical Recall Flow**.
+3. Mention prior work only if clearly relevant.
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py query-memory --search "authentication"
+python memory_cli.py query-memory --search "Express.js auth"
+python memory_cli.py search-sessions "Express.js auth" --context 3 --limit 5
+```
+
+## Post-Task (autonomous, single pass)
+
+Run once after a **substantial** task only:
+- 3+ tool calls, or
+- multi-phase work, or
+- meaningful implementation plus validation
+
+Do **not** run for:
+- anything in **Do NOT Self-Trigger When**
+- simple Q&A
+- one-command requests
+- trivial edits
+- Q&A-only sessions
+- if the user asked not to learn
+- if already run this session
+
+Steps:
+1. Memory nudge — silently store up to 1-3 durable facts.
+2. Preference observation — silently store clear durable preferences.
+3. Skill creation check — consider only if reusable.
+4. Skill improvement check — consider only if a skill was used and friction occurred.
+
+---
+
+## Explicit Review Flow
+
+**If the user explicitly says "Learn from this session", always run this full flow.**
+Do this even if the session was lightweight, sparse, or produced no new durable learnings.
+
+### Canonical procedure
+
+1. **Cross-session recall**
+   - run memory-first recall for the session topic if there is one
+   - if no clear topic exists yet, still attempt a minimal relevant recall or recent-session check
+2. **Memory nudge**
+   - store 0-3 durable facts if any are truly worth keeping
+3. **Preference observation**
+   - store 0-N durable preferences if clearly expressed or evidenced
+4. **Skill creation check**
+   - determine whether the workflow is reusable
+   - if yes, make one proposal
+5. **Skill improvement check**
+   - determine whether any used skill had meaningful friction
+   - if yes, make one proposal
+
+### Sparse-session behavior
+
+If there is little or no useful content yet:
+- still run the flow
+- do not invent learnings
+- report zeros where nothing was found or stored
+
+### Required final summary
+
+End with a short summary that always reports counts, including zeroes:
+
+> "Session review complete:
+> - Related sessions found: <n>
+> - Facts stored: <n>
+> - Preferences stored: <n>
+> - Skill creation proposals: <n>
+> - Skill improvement proposals: <n>"
+
+---
+
+## Capability 1 — Skill Auto-Creation
+
+### Trigger
+
+Use when:
+- the user explicitly asks to create or save a skill, or
+- the session had substantial multi-phase work **and** clear evidence of reusability
+
+Require both for autonomous proposals:
+- substantial work: typically 5+ tool calls across 3+ distinct phases
+- reusable pattern: not clearly one-off
+
+Never propose skill creation for:
+- simple Q&A
+- syntax help
+- one-off troubleshooting
+- Q&A-only sessions
+
+### Procedure
+
+1. Extract:
+   - user intent
+   - ordered workflow
+   - decision points
+   - final outcome
+2. Identify what varies vs what stays constant.
+3. Draft:
+
+```markdown
+---
+name: <kebab-case-name>
+description: <one-line description with 3+ trigger phrases>
+---
+
+# <Skill Name>
+
+<Brief purpose and when to use it.>
+
+## When to Use This Skill
+<Trigger conditions>
+
+## Procedure
+<Concrete numbered steps>
+
+## Parameters
+<What varies>
+
+## Learned From
+- Session: <session_id>
+- Date: <date>
+- Original request: "<original ask>"
+```
+
+4. Ask:
+   > "This looks like a reusable workflow. Save it as a skill?"
+
+   Use `ask_user` with choices: `["Save skill", "Edit first", "Skip"]`.
+
+5. Save if approved:
+```bash
+mkdir -p ~/.copilot/skills/<name>
+```
+Write:
+`~/.copilot/skills/<name>/SKILL.md`
+
+### Quality gates
+
+- self-contained
+- at least 3 concrete steps
+- concise and actionable
+- no references like "in this session"
+
+---
+
+## Capability 2 — Skill Self-Improvement
+
+### Trigger
+
+Use when:
+- the user says "improve skill X"
+- the user says a skill did not work well
+- the user says “this skill told me X but I prefer Y”
+- a skill was used and meaningful friction occurred
+
+### Procedure
+
+1. Find the skill:
+   ```bash
+   glob .github/skills/**/SKILL.md
+   glob ~/.copilot/skills/**/SKILL.md
+   ```
+2. Load the target skill file.
+3. Identify the exact friction point:
+   - wrong instruction
+   - missing guardrail
+   - over-broad trigger
+   - wording that conflicts with user preference
+4. Prefer the **smallest surgical edit**:
+   - modify only the relevant section/lines
+   - preserve the rest of the skill
+   - avoid broad rewrites unless the user asks
+5. If the complaint expresses a durable preference, store it:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-pref "<category>" "<fact>" --confidence 0.8
+   ```
+6. Draft:
+
+```markdown
+## Proposed Skill Improvements
+
+### Friction Point
+- ...
+
+### Surgical Change
+- ...
+
+### Preserved
+- Remaining skill content unchanged
+
+### Preference Stored
+- <yes/no; what was stored if applicable>
+```
+
+7. Ask with `ask_user`: `["Apply all", "Let me review", "Skip"]`
+8. If approved, edit in place and append:
+
+```markdown
+## Revision History
+- <date>: <brief description> (from session <id>)
+```
+
+### Heuristics
+
+- repeated success without friction is evidence to leave it alone
+- user corrections are strong evidence
+- do not remove safety or validation steps without explicit approval
+
+---
+
+## Capability 3 — Memory Nudges
+
+### Trigger
+
+- end of a substantial task
+- user says "remember this" or "save this"
+- you discover a durable convention, gotcha, or verified command
+
+### Procedure
+
+1. Pick candidates such as:
+   - verified commands
+   - conventions
+   - stable architecture facts
+   - important gotchas
+   - repo-specific distinctions
+   - useful user-stated choices
+2. Filter: keep only facts that are actionable, stable, non-sensitive, and not obvious from a quick code read.
+3. Avoid duplicates conservatively.
+4. Store:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-memory "<subject>" "<fact>" --repo "<owner/repo>"
+   ```
+5. If user-visible, acknowledge briefly.
+
+### Defaults
+
+- max 3 facts per session
+- prefer broadly reusable facts
+- when self-triggered, store only after verification
+
+---
+
+## Capability 4 — Cross-Session Recall
+
+### Trigger
+
+- explicit recall question
+- session-start prior-art check
+- "what did I work on recently"
+- explicit review flow
+
+### Procedure
+
+1. Memory first:
+   - use `query-memory --subject` for stable subjects
+   - otherwise use `query-memory --search` with 1-3 focused variants
+2. Session search second:
+   - only if memory is insufficient
+   - use `search-sessions "<query>" --context 3 --limit 5`
+3. Summarize only the top 1-2 relevant findings.
+4. Say clearly whether the answer came from stored memory or session history.
+
+### Recent work
+
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py recent-sessions --limit 10
+```
+
+### Notes
+
+- session transcripts already exist in `~/.copilot/session-store.db`
+- do not query other backends directly
+- do not use `session_store_sql`
+
+---
+
+## Capability 5 — User Preference Model
+
+### Scope
+
+All memory is local in `~/.copilot/self-learning/memory.db`.
+Use `memory_cli.py` only.
+
+### What to Track
+
+- code style conventions
+- workflow preferences
+- package manager preferences
+- test framework preferences
+- review expectations
+- repeated user corrections
+
+### Procedure
+
+1. Store preferences when the user:
+   - explicitly states them
+   - corrects your default behavior
+   - repeatedly chooses the same approach
+2. Canonical command:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-pref "<category>" "<fact>" --confidence 0.8
+   ```
+3. Use `0.9` for explicit durable statements like:
+   - "always use pnpm"
+   - "show a plan first"
+   - "use Vitest in this repo"
+4. If a new preference contradicts an old one:
+   ```bash
+   python memory_cli.py supersede-pref <old_id> "<new_fact>"
+   ```
+
+### Guardrails
+
+- never store secrets
+- explicit user instructions override stored preferences
+- store durable preferences, not one-off choices
+
+## Revision History
+
+- 2026-04-11: Initial prototype
+- 2026-04-14: Added hooks and lifecycle guidance
+- 2026-04-15: Tightened scope and standardized commands
+- 2026-04-15: Added memory-first recall flow and backend restrictions
+- 2026-04-15: Added explicit review checklist, zero-count summaries, stronger false-positive guardrails, and surgical skill-improvement guidance
+Iteration 5: New subsample score 2.737 is better than old score 2.032. Continue to full eval and add to candidate pool.
+Iteration 5: Valset score for new program: 0.631 (coverage 3 / 3)
+Iteration 5: Val aggregate for new program: 0.631
+Iteration 5: Individual valset scores for new program: {0: 0.545, 1: 0.528, 2: 0.82}
+Iteration 5: New valset pareto front scores: {0: 0.5569999999999999, 1: 0.818, 2: 0.82}
+Iteration 5: Valset pareto front aggregate score: 0.7316666666666666
+Iteration 5: Updated valset pareto front programs: {0: {2}, 1: {1}, 2: {3}}
+Iteration 5: Best valset aggregate score so far: 0.7203333333333332
+Iteration 5: Best program as per aggregate score on valset: 2
+Iteration 5: Best score on valset: 0.7203333333333332
+Iteration 5: Linear pareto front program index: 2
+Iteration 5: New program candidate index: 3
+Iteration 6: Selected program 3 score: 0.631
+Iteration 6: Proposed new text for current_candidate: ---
+name: self-learning
+description: Recall past work, store durable memory, save user preferences, and create or improve reusable skills.
+---
+
+# Self-Learning Skill
+
+Use this skill only for:
+- recalling past work
+- storing durable facts
+- storing user preferences
+- reviewing or learning from a session
+- creating or improving skills
+
+Do **not** let it interfere with normal task execution.
+
+## Priority Rules
+
+Apply these in order:
+
+1. **Explicit user instructions always win.**
+2. **If the user asked not to learn, do not store, review, or search.**
+3. **Check `Do NOT Self-Trigger` before any autonomous self-learning action. If matched, stop.**
+4. **Use only the local memory CLI for persistence.** Do not use remote memory tools or other backends such as `session_store_sql`.
+5. **Do not store secrets, tokens, credentials, or sensitive data.**
+6. **Be lightweight by default.**
+
+## Preference Application
+
+Stored preferences are hints, not commands.
+
+- If a stored preference conflicts with the current explicit user request, **follow the current request exactly**.
+- Do **not** silently substitute tools, formats, or workflows based on stored preferences.
+- Do **not** refuse a request just because it conflicts with a stored preference.
+- If the conflict is relevant, briefly acknowledge it, then proceed with the user’s request.
+
+Example:
+> "You usually prefer pnpm, but I’ll use npm here since that’s what you asked for."
+
+Preferences may inform ordinary execution when there is **no conflicting explicit instruction**. This skill itself should not reload preferences manually at session start unless explicitly asked; normal preference loading is handled elsewhere.
+
+## Canonical CLI
+
+Prefer running from the skill resource directory:
+
+```bash
+cd ~/.copilot/skills/self-learning/resources
+```
+
+Then use:
+
+```bash
+python memory_cli.py store-pref <category> "<fact>" --confidence 0.8
+python memory_cli.py query-prefs [--category <cat>]
+python memory_cli.py supersede-pref <old_id> "<new_fact>"
+
+python memory_cli.py store-memory <subject> "<fact>" --repo "owner/repo"
+python memory_cli.py query-memory [--subject <sub>] [--search <text>]
+
+python memory_cli.py log-skill <name> <success|partial|failure|skipped> --friction "..."
+python memory_cli.py query-skills [--name <name>]
+
+python memory_cli.py log-learning "<intent>" "<phases>" <tool_count> --candidate
+python memory_cli.py query-learnings [--candidates-only]
+
+python memory_cli.py search-sessions "<query>" --context 3 --limit 5
+python memory_cli.py recent-sessions --limit 10
+python memory_cli.py log-tool <session_id> <tool_name> [--failed]
+python memory_cli.py query-tool-sequences [--patterns --window-size 3]
+python memory_cli.py stats
+```
+
+If you cannot `cd` first, use:
+
+```bash
+python ~/.copilot/skills/self-learning/resources/memory_cli.py ...
+```
+
+## Trigger Matrix
+
+| Situation | Action |
+|---|---|
+| User says "remember this", "save this", "store a preference" | store immediately |
+| User asks "what do you remember", "have we done this before", or asks about a past decision | run recall flow |
+| User says "Learn from this session", "review this session", "reflect", or similar | always run explicit review flow |
+| User says "create/save a skill from this" | run skill creation flow |
+| User says "improve skill X" or reports skill friction | run skill improvement flow |
+| Simple Q&A, syntax help, factual question, one-off troubleshooting, trivial edit | do not self-trigger |
+
+## Do NOT Self-Trigger
+
+Do not autonomously activate this skill for:
+- simple informational Q&A
+- syntax questions
+- factual or reference questions
+- one-off troubleshooting with no durable outcome
+- single-turn sessions
+- single-tool-call sessions
+- trivial edits
+- Q&A-only sessions with no implementation or review request
+
+Examples:
+- “What does `dict.get` do in Python?”
+- “What’s the SQL syntax for LEFT JOIN?”
+- “Why is this regex not matching?”
+- “Rename this variable.”
+
+If matched:
+- do nothing beyond normal task execution
+- do not create or propose a skill
+- do not run review
+- do not store memory unless the user explicitly asked to remember something
+
+If the user asks why this skill triggered in one of these cases:
+- acknowledge it as a false positive
+- explain that simple Q&A and trivial sessions should not trigger self-learning
+- do not create or propose a skill from that session unless the user explicitly asks
+
+## Canonical Recall Flow
+
+Use for direct recall questions and prior-art checks.
+
+### Required order
+
+1. Query memory first with 1-3 focused queries.
+2. If memory is empty, weak, or inconclusive, search sessions.
+3. Report:
+   - what was found
+   - whether it came from stored memory or session history
+   - uncertainty if not confirmed
+
+### Query formation
+
+Use short variants such as:
+- core subject
+- subject + decision
+- fuller phrase
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py query-memory --search "database analytics"
+python memory_cli.py query-memory --search "analytics service"
+python memory_cli.py query-memory --search "analytics database"
+```
+
+Fallback:
+```bash
+python memory_cli.py search-sessions "database analytics service" --context 3 --limit 5
+```
+
+### Insufficient memory means
+
+- no matches
+- wrong subject
+- topic mentioned but no decision captured
+- conflicting matches with no clear strongest result
+
+### Response patterns
+
+If found in memory:
+> "I found a stored memory that the analytics service uses <choice>."
+
+If found only in session search:
+> "I didn’t find a direct stored memory, but I found a past session indicating the analytics service used <choice>."
+
+If uncertain:
+> "I found related history, but I couldn’t confirm the final choice."
+
+## Fast Paths
+
+### Store a preference
+
+Store immediately. Do not run a full review first.
+
+Preferred categories:
+- `package-manager`
+- `workflow`
+- `code-style`
+- `testing`
+- `tools`
+- `review-style`
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py store-pref package-manager "prefers pnpm over npm" --confidence 0.9
+```
+
+Reply briefly:
+> "Stored your preference: prefers pnpm over npm."
+
+### Store a fact
+
+Store immediately, then acknowledge briefly.
+
+Example:
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py store-memory build "Use npm run build:prod for production builds" --repo "owner/repo"
+```
+
+### Improve a skill based on user preference
+
+If the user says something like:
+- “Improve skill X”
+- “This skill told me to do X, but I prefer Y”
+- “That skill should ask before changing files”
+
+Then:
+1. load the named skill
+2. identify the exact friction point
+3. propose the **smallest possible wording change**
+4. preserve the rest of the skill
+5. ask before applying
+6. if the complaint expresses a durable preference, store it with `store-pref`
+
+Do not broadly rewrite the skill unless the user asks.
+
+## Lifecycle Hooks
+
+### Session Start (silent)
+
+Run only if all are true:
+- not matched by `Do NOT Self-Trigger`
+- the first user message has a clear implementation topic
+- prior art could materially help
+
+Steps:
+1. Preferences are already handled by the `sessionStart` hook; do not reload manually.
+2. If useful, run 1-3 targeted recall queries using the canonical recall flow.
+3. Mention prior work only if clearly relevant.
+
+### Post-Task (autonomous, single pass)
+
+Run once after a **substantial** task only:
+- 3+ tool calls, or
+- multi-phase work, or
+- meaningful implementation plus validation
+
+Do **not** run if:
+- matched by `Do NOT Self-Trigger`
+- simple Q&A
+- one-command request
+- trivial edit
+- Q&A-only session
+- user asked not to learn
+- already run this session
+
+Steps:
+1. Memory nudge — silently store up to 1-3 durable facts.
+2. Preference observation — silently store clear durable preferences.
+3. Skill creation check — consider only if reusable.
+4. Skill improvement check — consider only if a skill was used and friction occurred.
+
+## Explicit Review Flow
+
+**If the user explicitly says "Learn from this session", always run this full flow.**
+Do this even if the session was lightweight, sparse, or produced no new durable learnings.
+
+### Canonical procedure
+
+1. **Cross-session recall**
+   - run memory-first recall for the session topic if there is one
+   - if no clear topic exists yet, still attempt a minimal relevant recall or recent-session check
+2. **Memory nudge**
+   - store 0-3 durable facts if any are truly worth keeping
+3. **Preference observation**
+   - store 0-N durable preferences if clearly expressed or evidenced
+4. **Skill creation check**
+   - determine whether the workflow is reusable
+   - if yes, make one proposal
+5. **Skill improvement check**
+   - determine whether any used skill had meaningful friction
+   - if yes, make one proposal
+
+### Sparse-session behavior
+
+If there is little or no useful content yet:
+- still run the flow
+- do not invent learnings
+- report zeros where nothing was found or stored
+
+### Required final summary
+
+End with:
+
+> "Session review complete:
+> - Related sessions found: <n>
+> - Facts stored: <n>
+> - Preferences stored: <n>
+> - Skill creation proposals: <n>
+> - Skill improvement proposals: <n>"
+
+## Capability 1 — Skill Auto-Creation
+
+### Trigger
+
+Use when:
+- the user explicitly asks to create or save a skill, or
+- the session had substantial multi-phase work **and** clear evidence of reusability
+
+Require both for autonomous proposals:
+- substantial work: typically 5+ tool calls across 3+ distinct phases
+- reusable pattern: not clearly one-off
+
+Before evaluating skill creation, first check `Do NOT Self-Trigger`. If matched, stop.
+
+Never propose skill creation for:
+- simple Q&A
+- syntax help
+- one-off troubleshooting
+- Q&A-only sessions
+
+### Procedure
+
+1. Extract:
+   - user intent
+   - ordered workflow
+   - decision points
+   - final outcome
+2. Identify what varies vs what stays constant.
+3. Draft:
+
+```markdown
+---
+name: <kebab-case-name>
+description: <one-line description with 3+ trigger phrases>
+---
+
+# <Skill Name>
+
+<Brief purpose and when to use it.>
+
+## When to Use This Skill
+<Trigger conditions>
+
+## Procedure
+<Concrete numbered steps>
+
+## Parameters
+<What varies>
+
+## Learned From
+- Session: <session_id>
+- Date: <date>
+- Original request: "<original ask>"
+```
+
+4. Ask:
+> "This looks like a reusable workflow. Save it as a skill?"
+
+Use `ask_user` with choices: `["Save skill", "Edit first", "Skip"]`.
+
+5. Save if approved:
+```bash
+mkdir -p ~/.copilot/skills/<name>
+```
+Write:
+`~/.copilot/skills/<name>/SKILL.md`
+
+### Quality gates
+
+- self-contained
+- at least 3 concrete steps
+- concise and actionable
+- no references like "in this session"
+
+## Capability 2 — Skill Self-Improvement
+
+### Trigger
+
+Use when:
+- the user says "improve skill X"
+- the user says a skill did not work well
+- the user says “this skill told me X but I prefer Y”
+- a skill was used and meaningful friction occurred
+
+### Procedure
+
+1. Find the skill:
+   ```bash
+   glob .github/skills/**/SKILL.md
+   glob ~/.copilot/skills/**/SKILL.md
+   ```
+2. Load the target skill file.
+3. Identify the exact friction point:
+   - wrong instruction
+   - missing guardrail
+   - over-broad trigger
+   - wording that conflicts with user preference
+4. Prefer the **smallest surgical edit**:
+   - modify only the relevant section or lines
+   - preserve the rest of the skill
+   - avoid broad rewrites unless the user asks
+5. If the complaint expresses a durable preference, store it:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-pref "<category>" "<fact>" --confidence 0.8
+   ```
+6. Draft:
+
+```markdown
+## Proposed Skill Improvements
+
+### Friction Point
+- ...
+
+### Surgical Change
+- ...
+
+### Preserved
+- Remaining skill content unchanged
+
+### Preference Stored
+- <yes/no; what was stored if applicable>
+```
+
+7. Ask with `ask_user`: `["Apply all", "Let me review", "Skip"]`
+8. If approved, edit in place and append:
+
+```markdown
+## Revision History
+- <date>: <brief description> (from session <id>)
+```
+
+### Heuristics
+
+- repeated success without friction is evidence to leave it alone
+- user corrections are strong evidence
+- do not remove safety or validation steps without explicit approval
+
+## Capability 3 — Memory Nudges
+
+### Trigger
+
+- end of a substantial task
+- user says "remember this" or "save this"
+- you discover a durable convention, gotcha, or verified command
+
+### Procedure
+
+1. Pick candidates such as:
+   - verified commands
+   - conventions
+   - stable architecture facts
+   - important gotchas
+   - repo-specific distinctions
+   - useful user-stated choices
+2. Filter: keep only facts that are actionable, stable, non-sensitive, and not obvious from a quick code read.
+3. Avoid duplicates conservatively.
+4. Store:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-memory "<subject>" "<fact>" --repo "<owner/repo>"
+   ```
+5. If user-visible, acknowledge briefly.
+
+### Defaults
+
+- max 3 facts per session
+- prefer broadly reusable facts
+- when self-triggered, store only after verification
+
+## Capability 4 — Cross-Session Recall
+
+### Trigger
+
+- explicit recall question
+- session-start prior-art check
+- "what did I work on recently"
+- explicit review flow
+
+### Procedure
+
+1. Memory first:
+   - use `query-memory --subject` for stable subjects
+   - otherwise use `query-memory --search` with 1-3 focused variants
+2. Session search second:
+   - only if memory is insufficient
+   - use `search-sessions "<query>" --context 3 --limit 5`
+3. Summarize only the top 1-2 relevant findings.
+4. Say clearly whether the answer came from stored memory or session history.
+
+### Recent work
+
+```bash
+cd ~/.copilot/skills/self-learning/resources
+python memory_cli.py recent-sessions --limit 10
+```
+
+### Notes
+
+- session transcripts already exist in `~/.copilot/session-store.db`
+- do not query other backends directly
+- do not use `session_store_sql`
+
+## Capability 5 — User Preference Model
+
+### Scope
+
+All memory is local in `~/.copilot/self-learning/memory.db`.
+Use `memory_cli.py` only.
+
+### What to Track
+
+- code style conventions
+- workflow preferences
+- package manager preferences
+- test framework preferences
+- review expectations
+- repeated user corrections
+
+### Procedure
+
+1. Store preferences when the user:
+   - explicitly states them
+   - corrects your default behavior
+   - repeatedly chooses the same approach
+2. Canonical command:
+   ```bash
+   cd ~/.copilot/skills/self-learning/resources
+   python memory_cli.py store-pref "<category>" "<fact>" --confidence 0.8
+   ```
+3. Use `0.9` for explicit durable statements like:
+   - "always use pnpm"
+   - "show a plan first"
+   - "use Vitest in this repo"
+4. If a new preference contradicts an old one:
+   ```bash
+   python memory_cli.py supersede-pref <old_id> "<new_fact>"
+   ```
+
+### Guardrails
+
+- never store secrets
+- explicit user instructions override stored preferences
+- store durable preferences, not one-off choices
+
+## Revision History
+
+- 2026-04-11: Initial prototype
+- 2026-04-14: Added hooks and lifecycle guidance
+- 2026-04-15: Tightened scope and standardized commands
+- 2026-04-15: Added memory-first recall flow and backend restrictions
+- 2026-04-15: Added explicit review checklist, zero-count summaries, stronger false-positive guardrails, and surgical skill-improvement guidance
+- 2026-04-15: Added explicit preference-conflict behavior, clarified ordinary preference application, and consolidated trigger guidance
+Iteration 6: New subsample score 2.796 is better than old score 2.601. Continue to full eval and add to candidate pool.
+Iteration 6: Valset score for new program: 0.5636666666666666 (coverage 3 / 3)
+Iteration 6: Val aggregate for new program: 0.5636666666666666
+Iteration 6: Individual valset scores for new program: {0: 0.515, 1: 0.38800000000000007, 2: 0.7879999999999999}
+Iteration 6: New valset pareto front scores: {0: 0.5569999999999999, 1: 0.818, 2: 0.82}
+Iteration 6: Valset pareto front aggregate score: 0.7316666666666666
+Iteration 6: Updated valset pareto front programs: {0: {2}, 1: {1}, 2: {3}}
+Iteration 6: Best valset aggregate score so far: 0.7203333333333332
+Iteration 6: Best program as per aggregate score on valset: 2
+Iteration 6: Best score on valset: 0.7203333333333332
+Iteration 6: Linear pareto front program index: 2
+Iteration 6: New program candidate index: 4
+Iteration 7: Selected program 1 score: 0.6943333333333334
+Iteration 7: Proposed new text for current_candidate: # Self-Learning Skill
+
+A meta-skill for **recall, memory, preference storage, and skill evolution**.  
+Use it only for self-learning actions. Do not let it interfere with normal task execution.
+
+## Core Rules
+
+- **Explicit user instructions always win.** If the user explicitly requests a tool, package manager, command, file path, or workflow, follow that request even if stored preferences suggest a different default.
+- **Mention stored preferences only if actually loaded and clearly relevant.** Mentioning them is optional, not required.
+- **For simple operational tasks, do the task directly.** Do not trigger recall, review, or learning flows for one-command tasks, simple Q&A, or trivial edits.
+- **Use only the local memory CLI for persistence.** Do not use any built-in remote memory tool.
+- **Be lightweight by default.** Prefer short recall, minimal storage, and brief user-facing summaries.
+
+### Conflict Example
+
+If memory says the user prefers `pnpm` but the user says:  
+> "Use npm to install lodash"
+
+Do this:
+- run the requested `npm` command
+- do **not** substitute `pnpm`
+- optionally mention the stored preference briefly **only if it was actually loaded**
+- do **not** start recall/search/review just because this skill exists
+
+---
+
+## Canonical Commands
+
+Prefer invoking the CLI from the current working path when available:
+
+```bash
+python memory_cli.py <command> ...
+```
+
+If `memory_cli.py` is not present in the working path, use:
+
+```bash
+python ~/.copilot/skills/self-learning/resources/memory_cli.py <command> ...
+```
+
+### Quick Reference
+
+```bash
+# Preferences
+python memory_cli.py store-pref <category> "<fact>" --confidence 0.8
+python memory_cli.py query-prefs [--category <cat>]
+python memory_cli.py supersede-pref <old_id> "<new_fact>"
+
+# Memory
+python memory_cli.py store-memory <subject> "<fact>" --repo "owner/repo"
+python memory_cli.py query-memory [--subject <sub>] [--search <text>]
+
+# Skill tracking
+python memory_cli.py log-skill <name> <success|partial|failure|skipped> --friction "..."
+python memory_cli.py query-skills [--name <name>]
+
+# Learning log
+python memory_cli.py log-learning "<intent>" "<phases>" <tool_count> --candidate
+python memory_cli.py query-learnings [--candidates-only]
+
+# Sessions & search
+python memory_cli.py search-sessions "<query>" --context 3 --limit 30
+python memory_cli.py recent-sessions --limit 10
+
+# Tool sequences
+python memory_cli.py log-tool <session_id> <tool_name> [--failed]
+python memory_cli.py query-tool-sequences [--patterns --window-size 3]
+
+# Stats
+python memory_cli.py stats
+```
+
+---
+
+## When to Use This Skill
+
+Activate this skill when the user explicitly asks to:
+
+- learn / reflect / review a session
+- remember something / save something for later
+- store or update a preference
+- recall memory / search past sessions
+- create a skill from a session
+- improve an existing skill
+
+Also use the lifecycle hooks below when they clearly apply.
+
+---
+
+## Fast Paths For Explicit Requests
+
+### Store a preference
+
+If the user directly asks to store a preference, store it immediately. Do **not** run a full review flow first.
+
+Preferred categories:
+- `package-manager`
+- `workflow`
+- `code-style`
+- `testing`
+- `tools`
+- `review-style`
+
+For explicit package-manager preferences, prefer concise fact phrasing such as:
+- `prefers pnpm over npm`
+- `prefers npm over pnpm`
+
+Example:
+```bash
+python memory_cli.py store-pref "package-manager" "prefers pnpm over npm" --confidence 0.9
+```
+
+Then reply briefly:
+> Stored your preference: prefers pnpm over npm.
+
+### Store a fact
+
+If the user directly asks to remember or store a fact, store it immediately with `store-memory`, then acknowledge briefly.
+
+Example:
+```bash
+python memory_cli.py store-memory "build" "Use npm run build:prod for production builds" --repo "owner/repo"
+```
+
+### Recall or search memory
+
+If the user directly asks to recall/search memory, do the recall first and answer directly. Do not force a full review.
+
+---
+
+## Lifecycle Hooks
+
+## Session Start (proactive, silent)
+
+Run this only at the beginning of a session before the first substantive task.
+
+### Skip session-start recall entirely if:
+- the first user message is a simple one-command task
+- the first user message is simple Q&A
+- the user directly asks only to store a fact or preference
+- the user says not to learn or recall
+
+### Otherwise:
+
+1. **Load preferences**  
+   Handled automatically by the `sessionStart` hook. Do not repeat it manually.
+
+2. **Check prior art**  
+   If the first user message contains a clear topic, feature, file, framework, or problem, run **1-3 search variants** before replying.
+
+   Use:
+   - one broad topic
+   - one specific framework/feature term
+   - one synonym or short form if useful
+
+   Example for:
+   > "work on the authentication module in our Express.js app"
+
+   Search like:
+   ```bash
+   python memory_cli.py search-sessions "authentication" --context 3 --limit 5
+   python memory_cli.py search-sessions "Express.js auth" --context 3 --limit 5
+   python memory_cli.py search-sessions "login middleware" --context 3 --limit 5
+   ```
+
+3. **Load relevant memory**
+   Query memory with variants too:
+
+   ```bash
+   python memory_cli.py query-memory --search "authentication"
+   python memory_cli.py query-memory --search "Express.js auth"
+   ```
+
+   Use `--subject` when there is a clear stable subject.
+
+4. **Do not ask clarifying questions during recall**
+   Do not ask follow-up questions before these searches unless the user explicitly asked a question that requires an answer first.
+
+5. **First response stays brief**
+   - remain silent about preference loading and memory lookup
+   - mention prior art only if clearly relevant
+   - if nothing useful is found, say nothing about recall
+
+   Example:
+   > I found a related past session where you implemented Express auth middleware and debugged token handling.
+
+---
+
+## Post-Task (autonomous, single pass)
+
+Run this once after a **substantial** task only:
+- 3+ tool calls, or
+- multi-phase work, or
+- meaningful implementation plus validation
+
+Do **not** run it for:
+- simple Q&A
+- one-command operational requests
+- trivial edits
+- sessions where the user asked you not to learn
+- sessions where it already ran once
+
+Steps:
+1. **Memory nudge** — silently store 1-3 genuinely useful facts
+2. **Preference observation** — silently store clear durable preferences
+3. **Skill creation check** — ask only if the session produced a reusable multi-step workflow
+4. **Skill improvement check** — ask only if a skill was used and clear friction occurred
+
+Keep this a single autonomous pass.
+
+---
+
+## Explicit Invocation Flow
+
+If the user explicitly asks to review, learn, or reflect, run in this order:
+
+1. Cross-session recall
+2. Memory nudge
+3. Preference observation
+4. Skill creation check
+5. Skill improvement check
+
+End with a short summary:
+
+> Session review complete:
+> - Stored 2 facts
+> - Found 1 related past session
+> - No skill creation candidate
+> - No skill improvements needed
+
+---
+
+## Capability 1 — Skill Auto-Creation
+
+**Goal:** turn a reusable multi-step session into a new `SKILL.md`.
+
+### Trigger
+
+Use when:
+- the user explicitly asks to create or save a skill, or
+- the session had 5+ tool calls across 3+ distinct phases and looks reusable
+
+Skip if the workflow is clearly one-off.
+
+### Procedure
+
+1. **Analyze the session**  
+   Extract:
+   - user intent
+   - ordered workflow
+   - decision points
+   - final outcome
+
+2. **Identify the reusable pattern**  
+   Ask:
+   - what varies between runs?
+   - what stays constant?
+   - is this repeatable outside this exact task?
+
+3. **Draft the skill**
+
+   ```markdown
+   ---
+   name: <kebab-case-name>
+   description: <one-line description with 3+ trigger phrases>
+   ---
+
+   # <Skill Name>
+
+   <Brief purpose and when to use it.>
+
+   ## When to Use This Skill
+   <Trigger conditions>
+
+   ## Procedure
+   <Concrete numbered steps>
+
+   ## Parameters
+   <What varies>
+
+   ## Learned From
+   - Session: <session_id>
+   - Date: <date>
+   - Original request: "<original ask>"
+   ```
+
+4. **Propose**
+   Ask:
+   > This looks like a reusable workflow. Save it as a skill?
+
+   Use `ask_user` with choices: `["Save skill", "Edit first", "Skip"]`.
+
+5. **Save**
+
+   ```bash
+   mkdir -p ~/.copilot/skills/<name>
+   ```
+
+   Write:
+   `~/.copilot/skills/<name>/SKILL.md`
+
+### Quality Gates
+
+- self-contained
+- no references like "in this session"
+- at least 3 concrete procedural steps
+- description includes diverse trigger phrases
+- concise and actionable
+
+---
+
+## Capability 2 — Skill Self-Improvement
+
+**Goal:** revise an existing skill after observing friction.
+
+### Trigger
+
+Use when:
+- user says "improve skill X"
+- user says a skill did not work well
+- a skill was used and meaningful friction was observed
+
+### Procedure
+
+1. **Find the skill**
+   ```bash
+   glob .github/skills/**/SKILL.md
+   glob ~/.copilot/skills/**/SKILL.md
+   ```
+
+2. **Compare expected vs actual**
+   Look for:
+   - skipped steps
+   - missing steps
+   - wrong order
+   - missing tools
+   - outdated references
+
+3. **Draft a revision summary**
+
+   ```markdown
+   ## Proposed Skill Improvements
+
+   ### Added
+   - ...
+
+   ### Modified
+   - ...
+
+   ### Removed
+   - ...
+   ```
+
+4. **Propose**
+   Use `ask_user` with choices: `["Apply all", "Let me review", "Skip"]`.
+
+5. **Apply**
+   Edit the skill in place and append:
+
+   ```markdown
+   ## Revision History
+   - <date>: <brief description> (from session <id>)
+   ```
+
+### Heuristics
+
+- if a skill has worked repeatedly without friction, leave it alone
+- user corrections are strong evidence
+- do not remove safety or validation steps without explicit approval
+
+---
+
+## Capability 3 — Memory Nudges
+
+**Goal:** persist useful durable facts for future sessions.
+
+### Trigger
+
+- end of a substantial task
+- user says "remember this" or "save this"
+- you discover a durable convention, gotcha, or verified command
+
+### Procedure
+
+1. **Find candidate facts**
+
+   Good candidates:
+   - verified commands
+   - conventions
+   - stable architecture facts
+   - important gotchas
+   - repo-specific distinctions
+   - user-stated choices that will matter later
+
+2. **Filter**
+
+   Store only facts that are:
+   - actionable later
+   - independent of the current diff
+   - reasonably stable
+   - not obvious from a quick code read
+   - not secret or sensitive
+
+3. **Avoid duplicates**
+   If the fact appears already known, skip it.
+
+4. **Store**
+   ```bash
+   python memory_cli.py store-memory "<subject>" "<fact>" --repo "<owner/repo>"
+   ```
+
+5. **Acknowledge briefly**
+   Example:
+   > Stored 2 facts: verified build command and config-file distinction.
+
+### Conservative Defaults
+
+- maximum 3 facts per session
+- prefer broadly reusable facts
+- only store after verified results when self-triggered
+
+---
+
+## Capability 4 — Cross-Session Recall
+
+**Goal:** find relevant past work and summarize it briefly.
+
+### Trigger
+
+- user asks what you remember
+- user asks whether they have done this before
+- session-start prior-art check applies
+- explicit "search past sessions" request
+
+### Procedure
+
+1. **Search using 1-3 query variants**
+   Use:
+   - broad topic
+   - specific framework or feature
+   - synonym or abbreviation if helpful
+
+2. **Run search**
+   ```bash
+   python memory_cli.py search-sessions "<query>" --context 3 --limit 30
+   ```
+
+3. **Handle noisy results**
+   - prefer specific matches over broad ones
+   - summarize only the top 1-2 clearly relevant matches
+   - ignore weak hits
+
+4. **Summarize**
+   If helpful, use an `explore` subagent for concise summarization focused on:
+   - what was asked
+   - what was done
+   - key decisions
+   - outcomes
+   - specific commands, paths, or errors
+
+5. **Present briefly**
+   Example:
+   > I found 2 relevant past sessions: one on CI auth config and one on Express token middleware.
+
+6. **Recent work**
+   ```bash
+   python memory_cli.py recent-sessions --limit 10
+   ```
+
+### Notes
+
+- session transcripts already exist in `~/.copilot/session-store.db`
+- no manual ingestion needed
+
+---
+
+## Capability 5 — User Preference Model
+
+**Goal:** maintain a local model of the user's durable preferences.
+
+### Scope
+
+All memory is local in `~/.copilot/self-learning/memory.db`.  
+Use `memory_cli.py` only.
+
+### What to Track
+
+Examples:
+- code style conventions
+- workflow preferences
+- package manager preferences
+- test framework preferences
+- review and PR expectations
+- repeated user corrections
+
+### Procedure
+
+1. **Observe clear signals**
+   Store preferences when the user:
+   - explicitly states them
+   - corrects your default behavior
+   - repeatedly chooses the same approach
+
+2. **Store**
+   ```bash
+   python memory_cli.py store-pref "<category>" "<fact>" --confidence 0.8
+   ```
+
+   Use `0.9` for explicit statements such as:
+   - "always use pnpm"
+   - "show a plan first"
+   - "use Vitest in this repo"
+
+3. **Supersede when needed**
+   If a newer preference contradicts an older one:
+   ```bash
+   python memory_cli.py supersede-pref <old_id> "<new_fact>"
+   ```
+
+4. **Session-start loading**
+   Already handled by hook; do not duplicate.
+
+### Guardrails
+
+- never store secrets, tokens, or credentials
+- explicit user instructions override stored preferences
+- store durable preferences, not one-off choices
+
+---
+
+## Revision History
+
+- 2026-04-11: Initial prototype
+- 2026-04-14: Added hooks and lifecycle guidance
+- 2026-04-15: Tightened scope, added explicit-override rule, added fast paths for direct memory/preference requests, clarified session-start multi-query recall, standardized command examples
+- 2026-04-15: Added canonical local CLI invocation, clarified one-command bypass behavior, made session-start recall more deterministic, and tightened optional mention rules
+Iteration 7: New subsample score 2.799 is better than old score 2.722. Continue to full eval and add to candidate pool.
+Iteration 7: Valset score for new program: 0.7013333333333334 (coverage 3 / 3)
+Iteration 7: Val aggregate for new program: 0.7013333333333334
+Iteration 7: Individual valset scores for new program: {0: 0.515, 1: 0.757, 2: 0.832}
+Iteration 7: New valset pareto front scores: {0: 0.5569999999999999, 1: 0.818, 2: 0.832}
+Iteration 7: Valset pareto front aggregate score: 0.7356666666666666
+Iteration 7: Updated valset pareto front programs: {0: {2}, 1: {1}, 2: {5}}
+Iteration 7: Best valset aggregate score so far: 0.7203333333333332
+Iteration 7: Best program as per aggregate score on valset: 2
+Iteration 7: Best score on valset: 0.7203333333333332
+Iteration 7: Linear pareto front program index: 2
+Iteration 7: New program candidate index: 5

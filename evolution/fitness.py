@@ -72,9 +72,10 @@ Respond in JSON:
 }"""
 
     def __init__(self, config: EvolutionConfig):
-        from openai import OpenAI
+        from .llm_client import create_client, resolve_model
         self.config = config
-        self.client = OpenAI()
+        self.client = create_client()
+        self._resolve = resolve_model
 
     def score(
         self,
@@ -94,7 +95,7 @@ Respond in JSON:
 
         try:
             response = self.client.chat.completions.create(
-                model=self.config.eval_model.removeprefix("openai/"),
+                model=self._resolve(self.config.eval_model),
                 messages=[
                     {"role": "system", "content": self.JUDGE_PROMPT},
                     {"role": "user", "content": user_msg},

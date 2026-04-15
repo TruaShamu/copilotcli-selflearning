@@ -50,7 +50,7 @@ class EvalDataset:
     def save(self, path: Path):
         path.mkdir(parents=True, exist_ok=True)
         for name, data in [("train", self.train), ("val", self.val), ("holdout", self.holdout)]:
-            with open(path / f"{name}.jsonl", "w") as f:
+            with open(path / f"{name}.jsonl", "w", encoding="utf-8") as f:
                 for ex in data:
                     f.write(json.dumps(ex.to_dict()) + "\n")
 
@@ -61,7 +61,7 @@ class EvalDataset:
             fpath = path / f"{name}.jsonl"
             if fpath.exists():
                 examples = []
-                with open(fpath) as f:
+                with open(fpath, encoding="utf-8") as f:
                     for line in f:
                         if line.strip():
                             examples.append(EvalExample.from_dict(json.loads(line)))
@@ -89,15 +89,16 @@ class SyntheticDatasetBuilder:
     """Generate eval datasets by having an LLM read the skill and create test cases."""
 
     def __init__(self, config: EvolutionConfig):
-        from openai import OpenAI
+        from .llm_client import create_client, resolve_model
         self.config = config
-        self.client = OpenAI()
+        self.client = create_client()
+        self._resolve = resolve_model
 
     def generate(self, artifact_text: str, num_cases: Optional[int] = None) -> EvalDataset:
         n = num_cases or self.config.eval_dataset_size
 
         response = self.client.chat.completions.create(
-            model=self.config.judge_model.removeprefix("openai/"),
+            model=self._resolve(self.config.judge_model),
             messages=[
                 {"role": "system", "content": SYNTHETIC_PROMPT.format(num_cases=n)},
                 {"role": "user", "content": f"## Skill Text\n\n{artifact_text}"},
@@ -154,9 +155,10 @@ class SessionDBMiner:
     """
 
     def __init__(self, config: EvolutionConfig):
-        from openai import OpenAI
+        from .llm_client import create_client, resolve_model
         self.config = config
-        self.client = OpenAI()
+        self.client = create_client()
+        self._resolve = resolve_model
 
     def mine(self, skill_name: str, skill_text: str) -> EvalDataset:
         db_path = self.config.session_db_path
@@ -222,7 +224,7 @@ class SessionDBMiner:
             snippet = "\n\n".join(turns[:6])
             try:
                 response = self.client.chat.completions.create(
-                    model=self.config.judge_model.removeprefix("openai/"),
+                    model=self._resolve(self.config.judge_model),
                     messages=[
                         {"role": "system", "content": CONVERT_PROMPT},
                         {"role": "user", "content": f"Skill: {skill_name}\n\n{snippet}"},
@@ -259,7 +261,7 @@ class GoldenDatasetLoader:
             raise FileNotFoundError(f"No golden dataset at {golden_file}")
 
         examples = []
-        with open(golden_file) as f:
+        with open(golden_file, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
                     examples.append(EvalExample.from_dict(json.loads(line)))

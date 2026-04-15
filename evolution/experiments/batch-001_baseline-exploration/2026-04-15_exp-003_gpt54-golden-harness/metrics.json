@@ -1,0 +1,20 @@
+{
+  "skill_name": "self-learning",
+  "timestamp": "20260415_101604",
+  "max_metric_calls": 50,
+  "optimizer_model": "openai/gpt-4.1",
+  "eval_model": "openai/gpt-4.1-mini",
+  "baseline_score": 0.4184,
+  "evolved_score": 0.5844,
+  "improvement": 0.16600000000000004,
+  "baseline_size": 17491,
+  "evolved_size": 12820,
+  "dataset_sizes": {
+    "train": 7,
+    "val": 3,
+    "holdout": 5
+  },
+  "elapsed_seconds": 486.56927847862244,
+  "constraints_passed": true,
+  "holdout_harness": true
+}
