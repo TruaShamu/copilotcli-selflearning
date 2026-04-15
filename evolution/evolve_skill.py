@@ -55,6 +55,8 @@ def evolve(
     eval_model: str = "openai/gpt-4.1-mini",
     dry_run: bool = False,
     resume: bool = False,
+    harness: bool = False,
+    harness_timeout: int = 120,
 ):
     """Main evolution loop — GEPA optimize_anything on SKILL.md body."""
 
@@ -97,6 +99,7 @@ def evolve(
         console.print(f"  Would run GEPA optimize_anything (max {max_calls} metric calls)")
         console.print(f"  Optimizer model: {optimizer_model}")
         console.print(f"  Eval model: {eval_model}")
+        console.print(f"  Holdout harness: {'Copilot CLI (' + str(harness_timeout) + 's timeout)' if harness else 'LLM-judge only'}")
         return
 
     # ── Deferred imports (require API keys) ─────────────────────────────
@@ -246,14 +249,41 @@ def evolve(
         return
 
     # ── 7. Evaluate on holdout ──────────────────────────────────────────
-    console.print(f"\n[bold]Holdout evaluation ({len(dataset.holdout)} examples)[/bold]")
+    use_harness = harness
+    harness_runner = None
+    if use_harness:
+        from .harness import CopilotCLIHarness, HarnessConfig
+        harness_runner = CopilotCLIHarness(HarnessConfig(timeout=harness_timeout))
+        console.print(f"\n[bold]Holdout evaluation ({len(dataset.holdout)} examples) [cyan]with Copilot CLI harness[/cyan][/bold]")
+    else:
+        console.print(f"\n[bold]Holdout evaluation ({len(dataset.holdout)} examples)[/bold]")
 
     baseline_scores, evolved_scores = [], []
-    for ex in dataset.holdout:
+    for i, ex in enumerate(dataset.holdout):
+        baseline_output = ""
+        evolved_output = ""
+
+        if harness_runner:
+            console.print(f"  [{i+1}/{len(dataset.holdout)}] Running baseline...")
+            b_run = harness_runner.run(ex.task_input, skill_name, skill["raw"])
+            baseline_output = b_run.agent_output
+            if b_run.error:
+                console.print(f"    [yellow]⚠ Baseline error: {b_run.error}[/yellow]")
+            else:
+                console.print(f"    ✓ {b_run.elapsed_seconds:.1f}s, {len(b_run.tool_calls)} tool calls")
+
+            console.print(f"  [{i+1}/{len(dataset.holdout)}] Running evolved...")
+            e_run = harness_runner.run(ex.task_input, skill_name, evolved_full)
+            evolved_output = e_run.agent_output
+            if e_run.error:
+                console.print(f"    [yellow]⚠ Evolved error: {e_run.error}[/yellow]")
+            else:
+                console.print(f"    ✓ {e_run.elapsed_seconds:.1f}s, {len(e_run.tool_calls)} tool calls")
+
         b_score = judge.score(
             task_input=ex.task_input,
             expected_behavior=ex.expected_behavior,
-            agent_output="",
+            agent_output=baseline_output,
             skill_text=skill["body"],
         )
         baseline_scores.append(b_score.composite)
@@ -261,7 +291,7 @@ def evolve(
         e_score = judge.score(
             task_input=ex.task_input,
             expected_behavior=ex.expected_behavior,
-            agent_output="",
+            agent_output=evolved_output,
             skill_text=evolved_body,
         )
         evolved_scores.append(e_score.composite)
@@ -303,6 +333,7 @@ def evolve(
         },
         "elapsed_seconds": elapsed,
         "constraints_passed": all_pass,
+        "holdout_harness": use_harness,
     }, indent=2), encoding="utf-8")
 
     console.print(f"\n  Output: {out_dir}/")
@@ -357,7 +388,9 @@ def _build_dataset(
 @click.option("--eval-model", default="openai/gpt-4.1-mini")
 @click.option("--dry-run", is_flag=True, help="Validate setup only")
 @click.option("--resume", is_flag=True, help="Resume from previous run's log_dir")
-def main(skill, max_calls, eval_source, dataset_path, optimizer_model, eval_model, dry_run, resume):
+@click.option("--harness", is_flag=True, help="Use Copilot CLI harness for holdout eval")
+@click.option("--harness-timeout", default=120, help="Timeout per harness run in seconds")
+def main(skill, max_calls, eval_source, dataset_path, optimizer_model, eval_model, dry_run, resume, harness, harness_timeout):
     """Evolve a Copilot CLI skill using GEPA optimize_anything."""
     evolve(
         skill_name=skill,
@@ -368,6 +401,8 @@ def main(skill, max_calls, eval_source, dataset_path, optimizer_model, eval_mode
         eval_model=eval_model,
         dry_run=dry_run,
         resume=resume,
+        harness=harness,
+        harness_timeout=harness_timeout,
     )
 
 
