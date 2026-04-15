@@ -233,3 +233,32 @@ for. Missing test cases = missing optimization pressure = lost content.
 
 - Use gpt-5.4 as reflector, gpt-4o as judge (or vice versa)
 - Test whether decoupling reduces the feedback-loop over-optimization
+
+---
+
+## Future direction: Automated post-evolution diff analysis
+
+*Insight from Hermes:* The fact that we (Copilot) could identify exactly what
+the evolved skill lost — FTS5 syntax, subagent pattern, preToolUse hook — means
+this review step is automatable. The closed loop would be:
+
+```
+GEPA evolution
+  → post-evolution diff analysis (LLM compares baseline vs evolved)
+  → flags deleted sections with no covering test case
+  → auto-generates targeted golden test cases for uncovered content
+  → re-runs GEPA with the expanded dataset
+```
+
+This turns the "dataset coverage = optimization scope" limitation from a risk
+into a self-correcting system. Each evolution round identifies its own blind
+spots and patches them for the next round.
+
+**Implementation sketch:**
+1. `diff_analyzer.py` — takes baseline + evolved, identifies removed/weakened
+   sections, cross-references against golden.jsonl to find coverage gaps
+2. `test_generator.py` — given uncovered sections, generates new golden test
+   cases with expected behaviors that require the missing content
+3. Wire into `evolve_skill.py` as a `--auto-expand-dataset` flag
+
+This is the fully closed loop (◕‿◕✿)
