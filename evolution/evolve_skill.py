@@ -88,8 +88,11 @@ def evolve(
         console.print(f"  {icon} {c.constraint_name}: {c.message}")
 
     if dry_run:
+        from .llm_client import is_azure
+        backend = "Azure OpenAI" if is_azure() else "OpenAI"
         console.print(f"\n[bold green]DRY RUN — setup OK.[/bold green]")
         console.print(f"  Skill found and loaded: {skill['name']} ({len(skill['raw']):,} chars)")
+        console.print(f"  LLM backend: {backend}")
         console.print(f"  Eval source: {eval_source}")
         console.print(f"  Would run GEPA optimize_anything (max {max_calls} metric calls)")
         console.print(f"  Optimizer model: {optimizer_model}")
