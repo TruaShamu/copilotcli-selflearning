@@ -62,7 +62,7 @@ def evolve(
     from gepa.optimize_anything import optimize_anything, GEPAConfig, EngineConfig
 
     config = EvolutionConfig(
-        iterations=max_calls,
+        max_metric_calls=max_calls,
         optimizer_model=optimizer_model,
         eval_model=eval_model,
         judge_model=optimizer_model,
@@ -130,8 +130,8 @@ def evolve(
             return 0.0, {"rejected": True, "reason": reasons}
 
         # LLM-judge scoring
-        task_input = example.get("task_input", "") if isinstance(example, dict) else getattr(example, "task_input", "")
-        expected = example.get("expected_behavior", "") if isinstance(example, dict) else getattr(example, "expected_behavior", "")
+        task_input = example["task_input"]
+        expected = example["expected_behavior"]
 
         fitness = judge.score(
             task_input=task_input,

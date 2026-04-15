@@ -82,22 +82,21 @@ different aspects. Each test case needs:
 - difficulty: easy, medium, hard
 - category: what aspect of the skill this tests
 
-Respond with a JSON array of {num_cases} objects."""
+Respond in JSON: {{"test_cases": [<{num_cases} objects with task_input, expected_behavior, difficulty, category>]}}"""
 
 
 class SyntheticDatasetBuilder:
     """Generate eval datasets by having an LLM read the skill and create test cases."""
 
     def __init__(self, config: EvolutionConfig):
+        from openai import OpenAI
         self.config = config
+        self.client = OpenAI()
 
     def generate(self, artifact_text: str, num_cases: Optional[int] = None) -> EvalDataset:
-        from openai import OpenAI
-
-        client = OpenAI()
         n = num_cases or self.config.eval_dataset_size
 
-        response = client.chat.completions.create(
+        response = self.client.chat.completions.create(
             model=self.config.judge_model.removeprefix("openai/"),
             messages=[
                 {"role": "system", "content": SYNTHETIC_PROMPT.format(num_cases=n)},
@@ -109,8 +108,7 @@ class SyntheticDatasetBuilder:
 
         try:
             raw = json.loads(response.choices[0].message.content)
-            # Handle both {"test_cases": [...]} and bare [...]
-            cases_raw = raw if isinstance(raw, list) else raw.get("test_cases", raw.get("cases", []))
+            cases_raw = raw.get("test_cases", raw.get("cases", []))
         except (json.JSONDecodeError, AttributeError):
             text = response.choices[0].message.content
             match = re.search(r"\[.*\]", text, re.DOTALL)
@@ -156,7 +154,9 @@ class SessionDBMiner:
     """
 
     def __init__(self, config: EvolutionConfig):
+        from openai import OpenAI
         self.config = config
+        self.client = OpenAI()
 
     def mine(self, skill_name: str, skill_text: str) -> EvalDataset:
         db_path = self.config.session_db_path
@@ -216,15 +216,12 @@ class SessionDBMiner:
         conn.close()
 
         # Convert each session's snippet into eval examples
-        from openai import OpenAI
-
-        client = OpenAI()
         examples = []
 
         for sid, turns in list(sessions.items())[:10]:
             snippet = "\n\n".join(turns[:6])
             try:
-                response = client.chat.completions.create(
+                response = self.client.chat.completions.create(
                     model=self.config.judge_model.removeprefix("openai/"),
                     messages=[
                         {"role": "system", "content": CONVERT_PROMPT},

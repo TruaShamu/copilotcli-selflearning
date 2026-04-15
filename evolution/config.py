@@ -19,7 +19,7 @@ class EvolutionConfig:
     )
 
     # Optimization parameters
-    iterations: int = 10
+    max_metric_calls: int = 100
     population_size: int = 5
 
     # LLM configuration

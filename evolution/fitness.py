@@ -72,7 +72,9 @@ Respond in JSON:
 }"""
 
     def __init__(self, config: EvolutionConfig):
+        from openai import OpenAI
         self.config = config
+        self.client = OpenAI()
 
     def score(
         self,
@@ -83,10 +85,6 @@ Respond in JSON:
         artifact_size: Optional[int] = None,
         max_size: Optional[int] = None,
     ) -> FitnessScore:
-        from openai import OpenAI
-
-        client = OpenAI()
-
         user_msg = (
             f"## Task Input\n{task_input}\n\n"
             f"## Expected Behavior\n{expected_behavior}\n\n"
@@ -95,7 +93,7 @@ Respond in JSON:
         )
 
         try:
-            response = client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.config.eval_model.removeprefix("openai/"),
                 messages=[
                     {"role": "system", "content": self.JUDGE_PROMPT},
