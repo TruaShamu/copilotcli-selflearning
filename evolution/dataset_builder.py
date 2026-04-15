@@ -14,10 +14,7 @@ import re
 import sqlite3
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    import dspy
+from typing import Optional
 
 from .config import EvolutionConfig
 
@@ -71,60 +68,54 @@ class EvalDataset:
                 setattr(ds, name, examples)
         return ds
 
-    def to_dspy_examples(self, split: str = "train") -> list:
-        import dspy
-        return [
-            dspy.Example(
-                task_input=ex.task_input,
-                expected_behavior=ex.expected_behavior,
-            ).with_inputs("task_input")
-            for ex in getattr(self, split)
-        ]
-
 
 # ─── Synthetic dataset generation ───────────────────────────────────────
+
+
+SYNTHETIC_PROMPT = """\
+Generate realistic evaluation test cases for a Copilot CLI skill.
+
+Given the full text of a skill, generate diverse test cases that exercise
+different aspects. Each test case needs:
+- task_input: what a user would actually ask
+- expected_behavior: rubric for what a good response should contain (NOT exact text)
+- difficulty: easy, medium, hard
+- category: what aspect of the skill this tests
+
+Respond in JSON: {{"test_cases": [<{num_cases} objects with task_input, expected_behavior, difficulty, category>]}}"""
 
 
 class SyntheticDatasetBuilder:
     """Generate eval datasets by having an LLM read the skill and create test cases."""
 
     def __init__(self, config: EvolutionConfig):
-        import dspy
-
-        class GenerateTestCases(dspy.Signature):
-            """Generate realistic evaluation test cases for a Copilot CLI skill.
-
-            Given the full text of a skill, generate diverse test cases that exercise
-            different aspects. Each test case needs:
-            - task_input: what a user would actually ask
-            - expected_behavior: rubric for what a good response should contain (NOT exact text)
-            - difficulty: easy, medium, hard
-            - category: what aspect of the skill this tests
-            """
-            artifact_text: str = dspy.InputField(desc="Full text of the skill being tested")
-            num_cases: int = dspy.InputField(desc="Number of test cases to generate")
-            test_cases: str = dspy.OutputField(
-                desc="JSON array of objects with: task_input, expected_behavior, difficulty, category"
-            )
-
+        from openai import OpenAI
         self.config = config
-        self.generator = dspy.ChainOfThought(GenerateTestCases)
+        self.client = OpenAI()
 
     def generate(self, artifact_text: str, num_cases: Optional[int] = None) -> EvalDataset:
         n = num_cases or self.config.eval_dataset_size
-        lm = dspy.LM(self.config.judge_model)
 
-        with dspy.context(lm=lm):
-            result = self.generator(artifact_text=artifact_text, num_cases=n)
+        response = self.client.chat.completions.create(
+            model=self.config.judge_model.removeprefix("openai/"),
+            messages=[
+                {"role": "system", "content": SYNTHETIC_PROMPT.format(num_cases=n)},
+                {"role": "user", "content": f"## Skill Text\n\n{artifact_text}"},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.7,
+        )
 
         try:
-            cases_raw = json.loads(result.test_cases)
-        except json.JSONDecodeError:
-            match = re.search(r"\[.*\]", result.test_cases, re.DOTALL)
+            raw = json.loads(response.choices[0].message.content)
+            cases_raw = raw.get("test_cases", raw.get("cases", []))
+        except (json.JSONDecodeError, AttributeError):
+            text = response.choices[0].message.content
+            match = re.search(r"\[.*\]", text, re.DOTALL)
             if match:
                 cases_raw = json.loads(match.group())
             else:
-                raise ValueError(f"Could not parse test cases: {result.test_cases[:200]}")
+                raise ValueError(f"Could not parse test cases: {text[:200]}")
 
         examples = [
             EvalExample(
@@ -145,6 +136,15 @@ class SyntheticDatasetBuilder:
 # ─── Session DB mining ──────────────────────────────────────────────────
 
 
+CONVERT_PROMPT = """\
+Convert a real Copilot CLI conversation excerpt into an evaluation test case.
+Extract:
+- task_input: a generalized version of what the user was trying to do
+- expected_behavior: rubric for what a correct response should contain
+
+Respond in JSON: {"task_input": "...", "expected_behavior": "..."}"""
+
+
 class SessionDBMiner:
     """Mine evaluation data from Copilot CLI's native session store.
 
@@ -154,28 +154,19 @@ class SessionDBMiner:
     """
 
     def __init__(self, config: EvolutionConfig):
-        import dspy
-
-        class ConvertToEval(dspy.Signature):
-            """Convert a real conversation excerpt into an evaluation test case."""
-            skill_name: str = dspy.InputField(desc="Name of the skill")
-            conversation_snippet: str = dspy.InputField(desc="Real conversation excerpt")
-            task_input: str = dspy.OutputField(desc="Generalized user request")
-            expected_behavior: str = dspy.OutputField(desc="Rubric for correct response")
-
+        from openai import OpenAI
         self.config = config
-        self.converter = dspy.ChainOfThought(ConvertToEval)
+        self.client = OpenAI()
 
     def mine(self, skill_name: str, skill_text: str) -> EvalDataset:
         db_path = self.config.session_db_path
         if not db_path.exists():
             return EvalDataset()
 
-        # Open read-only to avoid locking the active session store
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
 
-        # Escape hyphens for FTS5 (canonical impl: resources/memory_cli.py fts5_escape)
+        # Escape hyphens for FTS5
         _fts5_hyphen_re = re.compile(r'(?<!")(\b\w+-\w+(?:-\w+)*\b)(?!")')
         safe_name = _fts5_hyphen_re.sub(r'"\1"', skill_name)
 
@@ -208,7 +199,7 @@ class SessionDBMiner:
                 f"[{row['source_type'].upper()}]: {row['content'][:500]}"
             )
 
-        # Also load actual turns for richer context
+        # Load actual turns for richer context
         for sid in list(sessions.keys())[:10]:
             turn_rows = conn.execute(
                 """SELECT turn_index, user_message, assistant_response
@@ -225,26 +216,30 @@ class SessionDBMiner:
         conn.close()
 
         # Convert each session's snippet into eval examples
-        lm = dspy.LM(self.config.judge_model)
         examples = []
 
-        with dspy.context(lm=lm):
-            for sid, turns in list(sessions.items())[:10]:
-                snippet = "\n\n".join(turns[:6])
-                try:
-                    result = self.converter(
-                        skill_name=skill_name,
-                        conversation_snippet=snippet,
+        for sid, turns in list(sessions.items())[:10]:
+            snippet = "\n\n".join(turns[:6])
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.config.judge_model.removeprefix("openai/"),
+                    messages=[
+                        {"role": "system", "content": CONVERT_PROMPT},
+                        {"role": "user", "content": f"Skill: {skill_name}\n\n{snippet}"},
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3,
+                )
+                result = json.loads(response.choices[0].message.content)
+                examples.append(
+                    EvalExample(
+                        task_input=result.get("task_input", ""),
+                        expected_behavior=result.get("expected_behavior", ""),
+                        source="sessiondb",
                     )
-                    examples.append(
-                        EvalExample(
-                            task_input=result.task_input,
-                            expected_behavior=result.expected_behavior,
-                            source="sessiondb",
-                        )
-                    )
-                except Exception:
-                    continue
+                )
+            except Exception:
+                continue
 
         random.shuffle(examples)
         return _split(examples, self.config)
