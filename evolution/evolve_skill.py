@@ -58,9 +58,6 @@ def evolve(
 ):
     """Main evolution loop — GEPA optimize_anything on SKILL.md body."""
 
-    import gepa.optimize_anything as oa
-    from gepa.optimize_anything import optimize_anything, GEPAConfig, EngineConfig
-
     config = EvolutionConfig(
         max_metric_calls=max_calls,
         optimizer_model=optimizer_model,
@@ -83,28 +80,35 @@ def evolve(
     console.print(f"  Name: {skill['name']}")
     console.print(f"  Size: {len(skill['raw']):,} chars")
 
-    # ── 2. Build or load evaluation dataset ─────────────────────────────
-    console.print(f"\n[bold]Building eval dataset[/bold] (source: {eval_source})")
-
-    dataset = _build_dataset(eval_source, dataset_path, skill_name, skill, config)
-
-    if dry_run:
-        console.print(f"\n[bold green]DRY RUN — setup OK.[/bold green]")
-        console.print(f"  Dataset: {len(dataset.all_examples)} examples")
-        console.print(f"  Would run GEPA optimize_anything (max {max_calls} metric calls)")
-        return
-
-    # Save dataset for reuse
-    save_path = config.output_dir / "datasets" / skill_name
-    dataset.save(save_path)
-    console.print(f"  Split: {len(dataset.train)} train / {len(dataset.val)} val / {len(dataset.holdout)} holdout")
-
-    # ── 3. Validate baseline constraints ────────────────────────────────
+    # ── 2. Validate baseline constraints ────────────────────────────────
     console.print(f"\n[bold]Baseline constraints[/bold]")
     validator = ConstraintValidator(config)
     for c in validator.validate_all(skill["body"]):
         icon = "✓" if c.passed else "✗"
         console.print(f"  {icon} {c.constraint_name}: {c.message}")
+
+    if dry_run:
+        console.print(f"\n[bold green]DRY RUN — setup OK.[/bold green]")
+        console.print(f"  Skill found and loaded: {skill['name']} ({len(skill['raw']):,} chars)")
+        console.print(f"  Eval source: {eval_source}")
+        console.print(f"  Would run GEPA optimize_anything (max {max_calls} metric calls)")
+        console.print(f"  Optimizer model: {optimizer_model}")
+        console.print(f"  Eval model: {eval_model}")
+        return
+
+    # ── Deferred imports (require API keys) ─────────────────────────────
+    import gepa.optimize_anything as oa
+    from gepa.optimize_anything import optimize_anything, GEPAConfig, EngineConfig
+
+    # ── 3. Build or load evaluation dataset ─────────────────────────────
+    console.print(f"\n[bold]Building eval dataset[/bold] (source: {eval_source})")
+
+    dataset = _build_dataset(eval_source, dataset_path, skill_name, skill, config)
+
+    # Save dataset for reuse
+    save_path = config.output_dir / "datasets" / skill_name
+    dataset.save(save_path)
+    console.print(f"  Split: {len(dataset.train)} train / {len(dataset.val)} val / {len(dataset.holdout)} holdout")
 
     # ── 4. Set up evaluator + GEPA ──────────────────────────────────────
     console.print(f"\n[bold]Configuring optimizer[/bold]")
