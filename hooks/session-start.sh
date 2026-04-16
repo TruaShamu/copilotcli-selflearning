@@ -60,6 +60,18 @@ if memories:
 print(json.dumps('\n'.join(lines)))
 " 2>/dev/null || echo '""')
 
+  # Append session store instructions to context
+  context=$(echo "$context" | python3 -c "
+import sys, json
+ctx = json.loads(sys.stdin.read())
+session_hint = '''
+
+## Session Store Recall
+
+You have access to your full session history via the sql tool with database:'session_store'. When starting a new task, search for relevant past context using: SELECT content FROM search_index WHERE search_index MATCH 'relevant keywords' ORDER BY rank LIMIT 5. This helps you recall past approaches, mistakes, and solutions.'''
+print(json.dumps(ctx + session_hint))
+" 2>/dev/null || echo "$context")
+
   cat <<EOF
 {
   "message": "Self-learning: loaded $pref_count preferences + $mem_count memories.",
