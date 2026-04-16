@@ -24,6 +24,14 @@
         "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/post-tool-use.ps1",
         "timeoutSec": 10
       }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "./hooks/session-end.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/session-end.ps1",
+        "timeoutSec": 30
+      }
     ]
   }
 }

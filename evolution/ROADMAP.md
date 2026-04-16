@@ -56,7 +56,7 @@ daily copilot usage
 
 ---
 
-## Phase 3: Stop hook for auto-reflection
+## Phase 3: Session-end hook for auto-reflection (in progress)
 
 **Problem:** The plugin's learning capabilities (memory storage, preference
 detection, skill creation) only trigger when explicitly invoked or when the
@@ -65,7 +65,7 @@ the session ends before reflection happens.
 
 **Design:**
 
-A `sessionStop` hook that runs automatically when a session ends:
+A `sessionEnd` hook that runs automatically when a session ends:
 
 ```
 session ends
@@ -90,13 +90,14 @@ session ends
 - **Opt-out:** Respect a `auto_reflect: false` preference if the user sets it.
 
 **Implementation:**
-- New hook in `hooks/sessionStop/` — calls a reflection script
+- Hook scripts in `hooks/session-end.{sh,ps1}` — registered via `hooks.json`
 - `resources/reflect.py` — takes session transcript, returns structured actions
+- Reuses `evolution/llm_client.py` for OpenAI + Azure OpenAI support
+- Direct SQLite reads for dedup, CLI writes via `memory_cli.py`
 - Integrates with existing `memory_cli.py` commands
 
-**Open question:** Does Copilot CLI support `sessionStop` hooks yet? If not,
-this needs an upstream feature request or a workaround (periodic check for
-session staleness).
+**Status:** `sessionEnd` hook confirmed available in Copilot CLI. Initial
+implementation in `feature/session-end-reflection` branch.
 
 ---
 
@@ -190,8 +191,8 @@ are observed in practice.
 
 ## Open questions
 
-1. **sessionStop hook support** — does Copilot CLI fire hooks on session end?
-   If not, what's the workaround?
+1. ~~**sessionStop hook support**~~ — **Resolved.** Copilot CLI fires `sessionEnd`
+   hooks on session termination. Implemented in Phase 3.
 2. **GEPA inner loop with harness** — is the cost ($50-100/run) justified by
    better evolved skills? Needs an experiment (batch-002).
 3. **Judge/reflector decoupling** — does using different models reduce the

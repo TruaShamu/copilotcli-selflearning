@@ -53,6 +53,12 @@ self_learning_hooks = {
         'bash': f'{hooks_dir}/self-learning-post-tool-use.sh',
         'powershell': f'powershell -ExecutionPolicy Bypass -File {hooks_dir}/self-learning-post-tool-use.ps1',
         'timeoutSec': 10
+    }],
+    'sessionEnd': [{
+        'type': 'command',
+        'bash': f'{hooks_dir}/self-learning-session-end.sh',
+        'powershell': f'powershell -ExecutionPolicy Bypass -File {hooks_dir}/self-learning-session-end.ps1',
+        'timeoutSec': 30
     }]
 }
 
