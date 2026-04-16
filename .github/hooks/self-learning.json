@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "./hooks/session-start.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/session-start.ps1",
+        "timeoutSec": 15
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "./hooks/user-prompt-submitted.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/user-prompt-submitted.ps1",
+        "timeoutSec": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "./hooks/pre-tool-use.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/pre-tool-use.ps1",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "./hooks/post-tool-use.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/post-tool-use.ps1",
+        "timeoutSec": 10
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "./hooks/agent-stop.sh",
+        "timeoutSec": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "./hooks/session-end.sh",
+        "timeoutSec": 30
+      }
+    ]
+  }
+}

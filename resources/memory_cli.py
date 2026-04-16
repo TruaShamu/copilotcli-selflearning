@@ -485,6 +485,59 @@ def cmd_stats(args):
     print(json.dumps(stats, indent=2))
 
 
+def cmd_memory_score(args):
+    """Show all memories + preferences ranked by unified relevance score."""
+    conn = get_conn()
+    items = []
+    for r in conn.execute(
+        "SELECT id, subject, fact, created_at, last_accessed_at, access_count FROM personal_memory"
+    ):
+        d = dict(r)
+        d["type"] = "memory"
+        d["relevance"] = round(_relevance_score(0.7, d["created_at"], d["last_accessed_at"], d["access_count"]), 4)
+        items.append(d)
+    for r in conn.execute(
+        "SELECT id, category, fact, confidence, created_at, last_accessed_at, access_count FROM preferences WHERE superseded_by IS NULL"
+    ):
+        d = dict(r)
+        d["type"] = "preference"
+        d["relevance"] = round(_relevance_score(d["confidence"], d["created_at"], d["last_accessed_at"], d["access_count"]), 4)
+        items.append(d)
+    items.sort(key=lambda x: x["relevance"], reverse=True)
+    if args.limit:
+        items = items[:args.limit]
+    print(json.dumps({"total": len(items), "items": items}, indent=2))
+
+
+def cmd_memory_decay(args):
+    """Flag low-score memories and preferences for review."""
+    conn = get_conn()
+    flagged = []
+    for r in conn.execute(
+        "SELECT id, subject, fact, created_at, last_accessed_at, access_count FROM personal_memory"
+    ):
+        d = dict(r)
+        d["type"] = "memory"
+        d["relevance"] = round(_relevance_score(0.7, d["created_at"], d["last_accessed_at"], d["access_count"]), 4)
+        if d["relevance"] < _DECAY_THRESHOLD:
+            flagged.append(d)
+    for r in conn.execute(
+        "SELECT id, category, fact, confidence, created_at, last_accessed_at, access_count FROM preferences WHERE superseded_by IS NULL"
+    ):
+        d = dict(r)
+        d["type"] = "preference"
+        d["relevance"] = round(_relevance_score(d["confidence"], d["created_at"], d["last_accessed_at"], d["access_count"]), 4)
+        if d["relevance"] < _DECAY_THRESHOLD:
+            flagged.append(d)
+    flagged.sort(key=lambda x: x["relevance"])
+    print(json.dumps({
+        "flagged_for_review": len(flagged),
+        "threshold": _DECAY_THRESHOLD,
+        "half_life_days": round(math.log(2) / _DECAY_LAMBDA, 1),
+        "items": flagged,
+    }, indent=2))
+
+
 def cmd_decay_report(args):
     """Show all preferences scored by relevance, flagging dormant ones."""
     conn = get_conn()
@@ -1122,6 +1175,13 @@ def main():
     p = sub.add_parser("recent-sessions")
     p.add_argument("--limit", type=int, default=10)
 
+    # memory-score: unified ranking across memories + preferences
+    p = sub.add_parser("memory-score", help="Show all memories+prefs ranked by relevance score")
+    p.add_argument("--limit", type=int, default=None, help="Max items to show")
+
+    # memory-decay: flag low-score items for review
+    p = sub.add_parser("memory-decay", help="Flag low-score memories+prefs for review")
+
     # search-context (hook: userPromptSubmitted)
     p = sub.add_parser("search-context", help="Search memories+prefs by prompt keywords (for hooks)")
     p.add_argument("prompt", help="User prompt text to search for")
@@ -1153,6 +1213,8 @@ def main():
         "query-tool-sequences": cmd_query_tool_sequences,
         "search-sessions": cmd_search_sessions,
         "recent-sessions": cmd_recent_sessions,
+        "memory-score": cmd_memory_score,
+        "memory-decay": cmd_memory_decay,
         "search-context": cmd_search_context,
         "session-stats": cmd_session_stats,
         "extract-session": cmd_extract_session,
