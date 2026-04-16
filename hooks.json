@@ -37,6 +37,7 @@
       {
         "type": "command",
         "bash": "./hooks/agent-stop.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/agent-stop.ps1",
         "timeoutSec": 10
       }
     ],
@@ -44,6 +45,7 @@
       {
         "type": "command",
         "bash": "./hooks/session-end.sh",
+        "powershell": "powershell -ExecutionPolicy Bypass -File ./hooks/session-end.ps1",
         "timeoutSec": 30
       }
     ]
