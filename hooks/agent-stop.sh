@@ -55,7 +55,7 @@ print(', '.join(tools[:10]))
   cat <<EOF
 {
   "decision": "block",
-  "reason": "Self-reflection checkpoint: You just completed a complex workflow ($tool_count tool calls using: $unique_tools) with no matching skill.\n\nBefore finishing, please:\n1. Store any new facts you learned: python3 $MEMORY_CLI store-memory <subject> <fact>\n2. Store any user preferences you noticed: python3 $MEMORY_CLI store-pref <category> <fact>\n3. If this workflow is reusable, create a skill file in .github/skills/<name>/SKILL.md with frontmatter containing only: name, description, user-invocable (NO version or trigger fields)\n\nThen continue with your response."
+  "reason": "Self-reflection checkpoint: You just completed a complex workflow ($tool_count tool calls using: $unique_tools) with no matching skill.\n\nBefore finishing, please:\n1. Store any new facts you learned: python3 $MEMORY_CLI store-memory <subject> <fact>\n2. Store any user preferences you noticed: python3 $MEMORY_CLI store-pref <category> <fact>\n3. If this workflow is reusable, ASK THE USER if they'd like to save it as a skill before creating one. Only create .github/skills/<name>/SKILL.md if the user confirms. (Frontmatter: name, description, user-invocable only — NO version or trigger fields)\n\nThen continue with your response."
 }
 EOF
   exit 0
