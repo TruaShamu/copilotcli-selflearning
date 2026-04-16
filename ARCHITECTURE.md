@@ -7,7 +7,48 @@ For LLM skill instructions, see [skills/self-learning/SKILL.md](skills/self-lear
 
 ## System Overview
 
-![Architecture diagram](architecture.png)
+Hook-driven autonomous learning. The agent never needs to voluntarily manage memory — hooks handle all reads, writes, and searches automatically.
+
+> **Design principle**: *The agent is a goldfish. Hooks are its brain.*
+
+Six hooks form a complete lifecycle around every session: context loading, semantic search, tool governance, usage logging, forced reflection, and LLM-powered extraction. The agent operates naturally; the hook system silently maintains continuity across sessions.
+
+## Hook Architecture
+
+All hooks live in `hooks/` with bash + PowerShell variants. They resolve `memory_cli.py` relative to their own location (`dirname $0/../resources/`) so they work from any install path.
+
+| Hook | Purpose | LLM? | Blocks? |
+|------|---------|------|---------|
+| `sessionStart` | Load prefs + memories → inject context | No | No |
+| `userPromptSubmitted` | FTS5 search on prompt → inject relevant matches | No | No |
+| `preToolUse` | Block `store_memory` (enforce local SQLite) | No | Yes (deny) |
+| `postToolUse` | Log tool calls + skill invocations | No | No |
+| `agentStop` | Force reflection on complex sessions (5+ tools, no skill) | No | Yes (block) |
+| `sessionEnd` | LLM extracts memories/prefs/skill candidates from transcript | Yes (`gpt-4o-mini`) | No |
+
+### Hook details
+
+- **sessionStart**: Queries active preferences (`WHERE superseded_by IS NULL`) and recent memories, formats them as context injection. Output goes to system prompt.
+- **userPromptSubmitted**: Runs FTS5 search against `memory_fts` and `prefs_fts` using the user's prompt as query. Injects matching memories/prefs as additional context.
+- **preToolUse**: Only hook with actionable output. Returns `deny` for `store_memory` calls to enforce that all memory writes go through the local SQLite pipeline, not Copilot's native store.
+- **postToolUse**: Logs every tool invocation to `tool_usage` (name, sequence index, success/failure). Logs skill invocations to `skill_usage`.
+- **agentStop**: Inspects session metrics. If 5+ tool calls and no skill was invoked, blocks the stop and forces the agent to reflect on whether the workflow should become a skill.
+- **sessionEnd**: Calls `gpt-4o-mini` to analyze the full session transcript. Extracts new memories, preference updates, and skill candidates. Writes directly to SQLite tables.
+
+> **Important**: Per the [official docs](https://docs.github.com/en/copilot/reference/hooks-configuration), only `preToolUse` can return allow/deny. `agentStop` can block by returning non-zero exit. Other hooks have output injected as context or discarded depending on type.
+
+## Data Flow
+
+```
+sessionStart
+  → prefs + memories injected into context
+    → userPromptSubmitted
+      → FTS5 search on prompt → relevant memories injected
+        → agent works (tool calls, edits, etc.)
+          → postToolUse logs each tool call
+            → agentStop checks: 5+ tools & no skill? → force reflection
+              → sessionEnd: gpt-4o-mini extracts memories/prefs/skill candidates
+```
 
 ## Database Schema
 
@@ -60,9 +101,6 @@ and manual `log-skill` calls (partial/skipped).
 | friction_notes | TEXT | What went wrong (manual only) |
 | created_at | TEXT | ISO datetime |
 
-**Note**: Hook-sourced entries only have `success`/`failure` outcomes.
-`partial` and `skipped` require manual `log-skill` invocation.
-
 ### learning_log
 
 Session workflows flagged as potential skill auto-creation candidates.
@@ -77,25 +115,6 @@ Session workflows flagged as potential skill auto-creation candidates.
 | tool_count | INTEGER | Number of tool calls |
 | skill_candidate | INTEGER | 1 if flagged as candidate |
 | created_at | TEXT | ISO datetime |
-
-### Cross-session search (native store)
-
-Session transcripts are stored in Copilot CLI's native `~/.copilot/session-store.db`.
-This is a separate SQLite database managed by Copilot CLI itself — the self-learning
-system reads it in read-only mode for cross-session search and evolution data mining.
-
-**Native store schema** (read-only, managed by Copilot CLI):
-- `sessions` — id, repository, branch, summary, created_at, updated_at
-- `turns` — session_id, turn_index, user_message, assistant_response, timestamp
-- `search_index` — FTS5 virtual table (content, session_id, source_type)
-- `checkpoints`, `session_files`, `session_refs` — additional metadata
-
-**FTS5 query syntax**: `keywords` (AND), `word1 OR word2`, `"exact phrase"`,
-`prefix*`, `word1 NOT word2`.
-
-**Note**: The native FTS5 store uses the default tokenizer (not porter). Hyphens
-in queries are treated as column prefix operators — the search command automatically
-wraps hyphenated terms in double-quotes to avoid errors.
 
 ### tool_usage
 
@@ -114,22 +133,42 @@ Every tool invocation per session, for sequence pattern analysis.
 to find recurring n-gram tool sequences across sessions. Sequences appearing
 in 2+ sessions are potential skill candidates.
 
-## Hooks
+### FTS5 Virtual Tables
 
-All hooks live in `hooks/` with bash + PowerShell variants. They resolve
-`memory_cli.py` relative to their own location (`dirname $0/../resources/`)
-so they work from any install path.
+| Table | Source | Purpose |
+|-------|--------|---------|
+| `memory_fts` | `personal_memory` | Full-text search on subject + fact columns |
+| `prefs_fts` | `preferences` | Full-text search on category + fact columns |
 
-| Hook | Event | Behavior |
-|------|-------|----------|
-| pre-tool-use | preToolUse | Blocks `store_memory` (returns deny) — **only hook with actionable output** |
-| session-start | sessionStart | Logging only (output is **ignored** by Copilot CLI runtime) |
-| post-tool-use | postToolUse | Logs tool to tool_usage + skill to skill_usage (output ignored) |
+Used by `userPromptSubmitted` hook and `search-context` CLI command. Content-sync triggers keep FTS tables in sync with source tables on INSERT/UPDATE/DELETE.
 
-> **Important**: Per the [official docs](https://docs.github.com/en/copilot/reference/hooks-configuration),
-> only `preToolUse` can return actionable output (allow/deny). All other hooks
-> have their output discarded. Preference loading is handled via custom
-> instructions in `~/.copilot/copilot-instructions.md`, not hooks.
+**FTS5 query syntax**: `keywords` (AND), `word1 OR word2`, `"exact phrase"`, `prefix*`, `word1 NOT word2`.
+
+### Cross-session search (native store)
+
+Session transcripts are stored in Copilot CLI's native `~/.copilot/session-store.db`.
+This is a separate SQLite database managed by Copilot CLI itself — the self-learning
+system reads it in read-only mode for cross-session search and evolution data mining.
+
+**Native store schema** (read-only, managed by Copilot CLI):
+- `sessions` — id, repository, branch, summary, created_at, updated_at
+- `turns` — session_id, turn_index, user_message, assistant_response, timestamp
+- `search_index` — FTS5 virtual table (content, session_id, source_type)
+- `checkpoints`, `session_files`, `session_refs` — additional metadata
+
+## CLI Commands
+
+### New commands (supporting hooks)
+
+| Command | Purpose | Used by |
+|---------|---------|---------|
+| `search-context` | FTS5 search across memory_fts + prefs_fts | `userPromptSubmitted` hook |
+| `session-stats` | Session metrics (tool count, skill usage, complexity) | `agentStop` hook |
+| `extract-session` | LLM-powered extraction of memories/prefs/skill candidates from transcript | `sessionEnd` hook |
+
+### Existing commands
+
+See `memory_cli.py --help` for the full list: `store-memory`, `recall`, `set-preference`, `get-preferences`, `log-skill`, `query-tool-sequences`, etc.
 
 ## Evolution Engine
 
