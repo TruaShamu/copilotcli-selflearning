@@ -1,188 +1,221 @@
-# Copilot CLI Self-Learning Skill
+# Copilot CLI Self-Learning
 
-A meta-skill that gives GitHub Copilot CLI a closed learning loop — and an
-evolution engine that lets the skill **improve itself** using automated
-prompt optimization.
+Hook-driven self-learning for GitHub Copilot CLI — preferences, memories, skills,
+and cross-session recall that compound over time. Includes an experimental
+evolution engine for automated skill improvement.
 
 ## What it does
 
-Five capabilities that compound over time:
+Five capabilities powered by Copilot CLI's native hook system:
 
-1. **Skill auto-creation** — Distill complex sessions into reusable skills
-2. **Skill self-improvement** — Revise skills after observing their use
-3. **Memory nudges** — Proactively persist important facts
-4. **Cross-session recall** — Search past sessions via FTS5 + LLM summarization
-5. **User preference model** — Build a deepening model of preferences and workflow
+1. **Preference & memory injection** — `sessionStart` loads ranked memories and preferences into every session via `additionalContext`
+2. **Policy enforcement** — `preToolUse` blocks repo-scoped `store_memory` to keep all data in local SQLite
+3. **Tool usage tracking** — `postToolUse` logs every tool call + skill invocation to SQLite for pattern analysis
+4. **Self-reflection gating** — `agentStop` blocks complex sessions (5+ tool calls) and forces the agent to store learnings and create skills before finishing
+5. **Session extraction** — `sessionEnd` runs gpt-4o-mini to extract facts, preferences, and skill candidates from completed sessions
 
-## Skill evolution engine
+## Hook architecture
 
-The plugin includes a [GEPA](https://github.com/google-deepmind/gepa)-powered
-evolution engine that automatically rewrites the skill text to improve agent
-behavior. It works like this:
+All 5 hooks return actionable output — this is **not** just logging:
 
-```
-Seed skill (SKILL.md)
-  → GEPA optimize_anything (LLM-guided prompt evolution)
-  → LLM-judge scores candidates against golden test cases
-  → Real Copilot CLI sessions validate the best candidate (harness)
-  → Evolved skill with measurable improvement
-```
+| Hook | Returns | Effect |
+|------|---------|--------|
+| `sessionStart` | `additionalContext` | Injects preferences, memories (ranked by `memory_score`), and session store recall nudge |
+| `preToolUse` | `decision:deny` | Blocks `store_memory` tool (policy enforcement) |
+| `postToolUse` | _(side effects)_ | Logs tool sequences + skill usage to SQLite |
+| `agentStop` | `decision:block` | Forces self-reflection on complex sessions without skills |
+| `sessionEnd` | _(side effects)_ | LLM-extracts learnings and stores to memory.db |
 
-**First result:** gpt-5.4 evolution achieved **+39.7% improvement** on holdout
-evaluation — the evolved skill gained structured priority rules, a decision
-table, and a recall flow that the original lacked. Full analysis in
-[`evolution/experiments/`](evolution/experiments/).
+### Memory scoring
 
-### Two-tier evaluation
+Memories are ranked by `memory_score` — a composite of:
+- **Access count** — how often a memory has been recalled
+- **Recency** — exponential decay with ~23-day half-life
+- **Confidence** — original storage confidence weight
+- **Access boost** — bonus for frequently-accessed items
 
-The engine uses a cost-efficient architecture:
+Only top-N memories by score are injected at session start, not all.
+`memory-decay` flags items scoring below 0.1 threshold for cleanup.
 
-- **Inner loop (fast):** LLM-judge scores skill text against expected behaviors
-  (~$0.01/eval, 2s)
-- **Holdout (accurate):** Real Copilot CLI sessions via the batch runner harness
-  (~$0.10/eval, 60-180s) — injects the candidate skill into a temp config dir
-  and measures actual agent behavior
+### Cross-session recall
 
-### Running evolution
+The `sessionStart` hook nudges the agent to search Copilot CLI's native
+`session-store.db` via the `sql` tool with `database:'session_store'`. This
+enables the agent to recall past approaches, mistakes, and solutions across
+sessions without any custom infrastructure.
+
+Requires the `SESSION_STORE` feature flag (see Installation).
+
+## Skills
+
+Skills live in `.github/skills/<name>/SKILL.md` — the native Copilot CLI
+discovery path. Frontmatter supports only:
+- `name` — skill identifier
+- `description` — what the skill does
+- `user-invocable` — whether users can call it directly
+
+> **Note:** `version` and `trigger` fields are **not supported** by Copilot CLI
+> and will cause errors if included.
+
+The `agentStop` hook prompts the agent to auto-create skills when it detects
+reusable workflows. Skills are invoked natively via `skill()` — Copilot CLI
+discovers them automatically from `.github/skills/`.
+
+## Installation
+
+### Option A: Plugin install
 
 ```bash
-# Dry run — verify setup without API calls
+copilot plugin install TruaShamu/copilotcli-selflearning
+```
+
+### Option B: Clone + manual install
+
+```bash
+git clone https://github.com/TruaShamu/copilotcli-selflearning.git
+cd copilotcli-selflearning
+
+# Linux/macOS
+bash install-hooks.sh
+
+# Windows
+powershell -ExecutionPolicy Bypass -File install-hooks.ps1
+```
+
+### Enable SESSION_STORE (recommended)
+
+Cross-session recall requires the `SESSION_STORE` feature flag:
+
+```bash
+# Add to ~/.copilot/config.json (create if missing):
+{
+  "features": {
+    "SESSION_STORE": true
+  }
+}
+```
+
+Or merge it into your existing config. The installer scripts do this
+automatically.
+
+### Enable skill discovery
+
+Skills in `.github/skills/` are discovered automatically by Copilot CLI when
+the repo is cloned. For plugin installs, symlink if needed:
+
+```bash
+# Linux/macOS
+ln -s ~/.copilot/installed-plugins/_direct/TruaShamu--copilotcli-selflearning/.github/skills ~/.github/skills
+
+# Or just clone the repo into a project directory — skills are repo-scoped
+```
+
+### Custom instructions (optional)
+
+Copy [`resources/AUTO-TRIGGER-GUIDE.md`](resources/AUTO-TRIGGER-GUIDE.md) into
+`~/.copilot/copilot-instructions.md` for enhanced auto-triggering of memory
+storage and skill creation.
+
+## Requirements
+
+- Python 3.9+ (for SQLite memory store and hook scripts)
+- GitHub Copilot CLI
+
+## Architecture
+
+All memory is local SQLite (`~/.copilot/self-learning/memory.db`). Tables:
+- `preferences` — user preferences with category and confidence
+- `personal_memory` — facts with subject, confidence, access tracking
+- `tool_usage` — per-session tool call sequences with error flags
+
+Full-text search via FTS5. Nothing leaves your machine.
+
+### memory_cli.py
+
+The memory backend with subcommands:
+
+| Command | Purpose |
+|---------|---------|
+| `search-context` | FTS5 search across all memory |
+| `store-memory` | Store a fact with subject + confidence |
+| `store-pref` | Store a user preference |
+| `extract-session` | LLM-extract learnings from a session transcript |
+| `session-stats` | Get tool call counts / complexity for a session |
+| `list-all` | Dump all stored memories |
+| `memory-score` | Show ranked memories by composite score |
+| `memory-decay` | Flag low-scoring items for cleanup |
+
+### Project structure
+
+```
+copilotcli-selflearning/
+├── .github/
+│   ├── hooks/
+│   │   └── self-learning.json    # Hook configuration (6 event types)
+│   └── skills/
+│       └── python-project-scaffold/
+│           └── SKILL.md           # Auto-created skill example
+├── hooks/                         # Hook scripts (bash + PowerShell)
+│   ├── session-start.sh/.ps1     # Inject preferences + memories + session store nudge
+│   ├── pre-tool-use.sh/.ps1      # Block repo-scoped store_memory
+│   ├── post-tool-use.sh/.ps1     # Log tool sequences + skill usage
+│   ├── agent-stop.sh             # Block complex sessions for self-reflection
+│   ├── session-end.sh            # LLM-extract learnings from session
+│   └── user-prompt-submitted.sh  # Prompt analysis hook
+├── skills/
+│   ├── self-learning/SKILL.md    # Core self-learning skill spec
+│   └── python-project-scaffold/SKILL.md
+├── resources/
+│   ├── memory_cli.py             # SQLite memory backend
+│   └── AUTO-TRIGGER-GUIDE.md     # Custom instructions template
+├── evolution/                     # Skill evolution engine (experimental)
+│   ├── evolve_skill.py           # GEPA + holdout eval orchestrator
+│   ├── fitness.py                # LLM-judge scoring
+│   ├── llm_client.py            # OpenAI / Azure client
+│   ├── harness/                  # Copilot CLI batch runner
+│   ├── datasets/                 # Golden test cases
+│   ├── experiments/              # Tracked experiment batches
+│   └── ROADMAP.md
+├── hooks.json                    # Legacy hook config (user-level)
+├── plugin.json                   # Plugin manifest
+├── install-hooks.sh              # Hook installer (Linux/macOS)
+├── install-hooks.ps1             # Hook installer (Windows)
+├── uninstall-hooks.py            # Hook uninstaller
+├── requirements.txt
+├── ARCHITECTURE.md
+└── EVALUATION.md
+```
+
+## Skill evolution engine (experimental)
+
+A [GEPA](https://github.com/google-deepmind/gepa)-powered engine that
+automatically rewrites skill text to improve agent behavior:
+
+```
+Seed skill → GEPA optimize_anything → LLM-judge scoring → Copilot CLI harness validation → Evolved skill
+```
+
+**Best result:** gpt-5.4 evolution achieved **+39.7% improvement** on holdout
+evaluation with **-26.7% size reduction**. Full analysis in
+[`evolution/experiments/`](evolution/experiments/).
+
+> ⚠️ **Known issue:** Over-prunes when the evaluation dataset lacks richness.
+> Use golden datasets with diverse scenarios for best results.
+
+```bash
+# Dry run
 python -m evolution.evolve_skill --skill self-learning --dry-run
 
-# Evolve with golden dataset + harness holdout
+# Full evolution with harness
 python -m evolution.evolve_skill \
   --skill self-learning \
   --eval-source golden \
   --dataset-path evolution/datasets/self-learning/ \
   --max-calls 50 \
   --harness
-
-# Azure OpenAI backend
-export AZURE_OPENAI_ENDPOINT="https://your-endpoint.openai.azure.com/openai/v1"
-export AZURE_OPENAI_API_KEY="your-key"
-export AZURE_OPENAI_MODEL="your-deployment-name"
-python -m evolution.evolve_skill --skill self-learning --harness
 ```
 
-Results land in `~/.copilot/self-learning/evolution-runs/` with baseline,
-evolved skill, and metrics. Experiment tracking lives in
-[`evolution/experiments/`](evolution/experiments/).
-
-See the [roadmap](evolution/ROADMAP.md) for what's next: session ingestion,
-auto-reflection hooks, closed-loop dataset expansion, and confidence-gated
-auto-deployment.
-
-## Installation
-
-### Step 1: Install the plugin
-
-> **Note**: Plugin install support requires Copilot CLI with plugin support
-> enabled. Check [GitHub docs](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/plugins-finding-installing) for availability.
-
-```bash
-copilot plugin install TruaShamu/copilotcli-selflearning
-```
-
-To update: `copilot plugin update self-learning`
-To remove: `copilot plugin uninstall self-learning`
-
-### Step 2: Symlink the skill for discovery
-
-The plugin system registers hooks automatically, but skills may not be
-discovered from the plugin directory. Create a symlink so Copilot CLI finds
-the skill at the standard user-level location:
-
-```bash
-# Linux/macOS
-ln -s ~/.copilot/installed-plugins/_direct/TruaShamu--copilotcli-selflearning/skills/self-learning ~/.copilot/skills/self-learning
-
-# Windows (run as admin, or with Developer Mode enabled)
-New-Item -ItemType Junction -Path "$env:USERPROFILE\.copilot\skills\self-learning" -Target "$env:USERPROFILE\.copilot\installed-plugins\_direct\TruaShamu--copilotcli-selflearning\skills\self-learning"
-```
-
-### Step 3: Add custom instructions
-
-Copy the contents of [`resources/AUTO-TRIGGER-GUIDE.md`](resources/AUTO-TRIGGER-GUIDE.md)
-into `~/.copilot/copilot-instructions.md`. This is what makes the self-learning
-loop actually trigger — without it, the LLM won't know to store preferences,
-nudge memories, or offer skill creation.
-
-See the guide for the full recommended instruction block.
-
-### Manual install (alternative)
-
-Clone into your Copilot CLI user skills directory:
-
-```bash
-git clone https://github.com/TruaShamu/copilotcli-selflearning.git ~/.copilot/skills/self-learning
-```
-
-Then run the hooks installer:
-
-```bash
-# Linux/macOS
-bash ~/.copilot/skills/self-learning/install-hooks.sh
-
-# Windows
-powershell -ExecutionPolicy Bypass -File ~/.copilot/skills/self-learning/install-hooks.ps1
-```
-
-## Requirements
-
-- Python 3.9+ (for local SQLite memory store)
-- GitHub Copilot CLI
-
-## Architecture
-
-All memory is local SQLite (`~/.copilot/self-learning/memory.db`). Cross-session
-search reads Copilot CLI's native `~/.copilot/session-store.db` in read-only mode.
-Nothing is sent to any external service or repo-scoped storage.
-
-For the full database schema, hook internals, and evolution engine details,
-see [ARCHITECTURE.md](ARCHITECTURE.md).
-
-### Plugin structure
-
-```
-self-learning/
-├── plugin.json              # Plugin manifest
-├── hooks.json               # Hook configuration (3 hooks)
-├── hooks/                   # Hook scripts (bash + PowerShell)
-│   ├── session-start.*      # Logging only
-│   ├── pre-tool-use.*       # Block repo-scoped store_memory
-│   └── post-tool-use.*      # Log tool sequences + skill usage
-├── skills/
-│   └── self-learning/
-│       └── SKILL.md         # Full skill specification
-├── resources/
-│   ├── memory_cli.py        # Local SQLite memory store CLI
-│   └── AUTO-TRIGGER-GUIDE.md
-├── evolution/               # Skill evolution engine
-│   ├── evolve_skill.py      # Main orchestrator (GEPA + holdout eval)
-│   ├── fitness.py           # LLM-judge scoring
-│   ├── llm_client.py        # OpenAI / Azure OpenAI client factory
-│   ├── harness/             # Copilot CLI batch runner
-│   │   └── __init__.py      # Runs real agent sessions for evaluation
-│   ├── datasets/            # Golden test cases
-│   ├── experiments/         # Tracked experiment batches + analysis
-│   └── ROADMAP.md           # Evolution engine roadmap
-├── install-hooks.sh         # Manual hook installer (Linux/macOS)
-├── install-hooks.ps1        # Manual hook installer (Windows)
-└── uninstall-hooks.py       # Hook uninstaller
-```
-
-### Hook limitations
-
-Per the [official Copilot CLI docs](https://docs.github.com/en/copilot/reference/hooks-configuration),
-**only `preToolUse` hooks can return actionable output** (allow/deny decisions).
-All other hook types (`sessionStart`, `postToolUse`, `sessionEnd`) have their
-output **ignored** — they can only perform side effects like logging.
-
-This means preferences and memories **cannot** be injected via hooks. The
-custom instructions in `~/.copilot/copilot-instructions.md` are what make the
-LLM proactively load preferences and store memories.
-
-See [SKILL.md](skills/self-learning/SKILL.md) for the full skill specification.
+See [evolution/ROADMAP.md](evolution/ROADMAP.md) for what's next.
 
 ## License
 
