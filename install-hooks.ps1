@@ -1,4 +1,5 @@
-# Install self-learning hooks to the user-level ~/.copilot/hooks/ directory.
+# Install self-learning hooks to the user-level ~/.copilot/ directory.
+# Handles: hook script copying, config.json hook registration, SESSION_STORE flag.
 # Run once after cloning the repo.
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +20,13 @@ foreach ($f in Get-ChildItem "$hooksSrc\*" -Include "*.sh","*.ps1") {
     Write-Host "  ✓ Installed $dest" -ForegroundColor Green
 }
 
-# 2. Update config.json with hooks
+# 2. Note .github/hooks config
+$ghHooksConfig = Join-Path $scriptDir ".github\hooks\self-learning.json"
+if (Test-Path $ghHooksConfig) {
+    Write-Host "  ✓ Found .github/hooks/self-learning.json (repo-level hook config)" -ForegroundColor Green
+}
+
+# 3. Update config.json with hooks + SESSION_STORE flag
 if (-not (Test-Path $configPath)) {
     '{}' | Set-Content $configPath
 }
@@ -31,8 +38,6 @@ config_path = r'$configPath'
 with open(config_path) as f:
     config = json.load(f)
 
-# Copilot CLI expands ~ in hook paths per the config spec.
-# See: https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference
 hooks_dir = '~/.copilot/hooks'
 
 self_learning_hooks = {
@@ -53,6 +58,16 @@ self_learning_hooks = {
         'bash': f'{hooks_dir}/self-learning-post-tool-use.sh',
         'powershell': f'powershell -ExecutionPolicy Bypass -File {hooks_dir}/self-learning-post-tool-use.ps1',
         'timeoutSec': 10
+    }],
+    'agentStop': [{
+        'type': 'command',
+        'bash': f'{hooks_dir}/self-learning-agent-stop.sh',
+        'timeoutSec': 10
+    }],
+    'sessionEnd': [{
+        'type': 'command',
+        'bash': f'{hooks_dir}/self-learning-session-end.sh',
+        'timeoutSec': 30
     }]
 }
 
@@ -68,14 +83,25 @@ for event, hook_list in self_learning_hooks.items():
 
 config['hooks'] = existing_hooks
 
+# Enable SESSION_STORE feature flag for cross-session recall
+features = config.get('features', {})
+if 'SESSION_STORE' not in features:
+    features['SESSION_STORE'] = True
+    print('  \u2713 Enabled SESSION_STORE feature flag')
+else:
+    print('  \u2713 SESSION_STORE feature flag already set')
+config['features'] = features
+
 with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
 
-print('  \u2713 Updated ~/.copilot/config.json')
+print('  \u2713 Updated ~/.copilot/config.json (5 hooks registered)')
 "@
 
 Write-Host ""
 Write-Host "Done! Self-learning hooks are now active globally." -ForegroundColor Green
-Write-Host "Hooks will apply to all Copilot CLI sessions across all repos."
+Write-Host "Hooks installed: sessionStart, preToolUse, postToolUse, agentStop, sessionEnd"
+Write-Host ""
+Write-Host "Skills: Place skills in .github/skills/<name>/SKILL.md for auto-discovery."
 Write-Host ""
 Write-Host "To uninstall: python $(Join-Path $scriptDir 'uninstall-hooks.py')"
