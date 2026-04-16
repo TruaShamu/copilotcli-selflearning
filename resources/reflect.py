@@ -33,7 +33,9 @@ NATIVE_SESSION_STORE = os.path.expanduser("~/.copilot/session-store.db")
 MEMORY_DB = os.path.expanduser("~/.copilot/self-learning/memory.db")
 MEMORY_CLI = str(Path(__file__).parent / "memory_cli.py")
 
-# Reflection model — fast and cheap, reflection is extraction not reasoning
+# Reflection model — fast and cheap, reflection is extraction not reasoning.
+# On Azure OpenAI, set AZURE_OPENAI_REFLECT_MODEL to the deployment name
+# for gpt-4o-mini (separate from the main AZURE_OPENAI_MODEL deployment).
 REFLECT_MODEL = os.environ.get("REFLECT_MODEL", "gpt-4o-mini")
 
 # Only store items above this confidence
@@ -276,6 +278,12 @@ EXTRACTION_SCHEMA = {
 
 def reflect_on_transcript(turns: list[dict]) -> dict | None:
     """Send the transcript to an LLM and extract structured learnings."""
+    def is_azure_env():
+        return bool(
+            os.environ.get("AZURE_OPENAI_ENDPOINT")
+            and os.environ.get("AZURE_OPENAI_API_KEY")
+        )
+
     # Import LLM client from the evolution engine (supports OpenAI + Azure)
     sys.path.insert(0, str(Path(__file__).parent.parent / "evolution"))
     try:
@@ -294,7 +302,13 @@ def reflect_on_transcript(turns: list[dict]) -> dict | None:
     except Exception:
         return None
 
-    model = resolve_model(REFLECT_MODEL)
+    # On Azure, use a dedicated env var for the reflection deployment name,
+    # since AZURE_OPENAI_MODEL typically points to the main (expensive) model.
+    azure_reflect = os.environ.get("AZURE_OPENAI_REFLECT_MODEL")
+    if azure_reflect and is_azure_env():
+        model = azure_reflect
+    else:
+        model = resolve_model(REFLECT_MODEL)
 
     # Build the transcript text
     transcript_lines = []
